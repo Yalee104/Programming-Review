@@ -1,4 +1,5 @@
 // C++ quiz — questions map to sections of cpp_study_summary.md
+// level: "beginner" | "intermediate" | "advanced"
 window.QUIZZES = window.QUIZZES || {};
 window.QUIZZES.cpp = {
   title: "C++ Quiz",
@@ -38,6 +39,7 @@ window.QUIZZES.cpp = {
     // ---- Section 1
     {
       type: "mc",
+      level: "beginner",
       q: "What does marking a single-argument constructor `explicit` do?",
       code: "class Widget {\npublic:\n    explicit Widget(int id) {}\n};\nvoid process(Widget w) {}\n\nprocess(42);",
       choices: [
@@ -50,9 +52,25 @@ window.QUIZZES.cpp = {
       explain: "`explicit` prevents the compiler from doing implicit conversions through the constructor. `process(42)` is rejected; you must write `process(Widget(42))` to convert manually.",
       section: 1
     },
+    {
+      type: "mc",
+      level: "intermediate",
+      q: "WITHOUT `explicit`, why does `process(42)` compile at all?",
+      code: "class Widget {\npublic:\n    Widget(int id) {}     // not explicit\n};\nvoid process(Widget w) {}\n\nprocess(42);   // compiles — why?",
+      choices: [
+        "The compiler silently calls `Widget(42)` for you — an implicit conversion through the constructor",
+        "int and Widget are compatible types",
+        "`process` accepts any type via templates",
+        "It doesn't compile — an int can never become a Widget"
+      ],
+      answer: 0,
+      explain: "A non-explicit single-argument constructor doubles as an implicit conversion: the compiler auto-converts `42` by constructing `Widget(42)`. Handy sometimes, but surprising conversions are why the guideline says mark single-arg constructors `explicit`.",
+      section: 1
+    },
     // ---- Section 2
     {
       type: "mc",
+      level: "intermediate",
       q: "Which ordering of qualifiers is correct for an overriding const method?",
       choices: [
         "`void f() const override {}`",
@@ -66,6 +84,7 @@ window.QUIZZES.cpp = {
     },
     {
       type: "fill",
+      level: "beginner",
       q: "In `virtual void describe() const override = 0;`, which two characters at the end make the method **pure virtual** (subclass must implement)?",
       accept: ["= 0", "=0", "0"],
       answerDisplay: "`= 0`",
@@ -75,6 +94,7 @@ window.QUIZZES.cpp = {
     // ---- Section 3
     {
       type: "mc",
+      level: "beginner",
       q: "What is the only real difference between `struct` and `class` in C++?",
       choices: [
         "Default access: `struct` members are public by default, `class` members are private",
@@ -89,6 +109,7 @@ window.QUIZZES.cpp = {
     // ---- Section 4
     {
       type: "mc",
+      level: "advanced",
       q: "Is the following legal, given `balance_` is a `private` member of `Account`?",
       code: "bool hasMoreThan(const Account& other) const {\n    return balance_ > other.balance_;   // read OTHER object's private\n}",
       choices: [
@@ -104,6 +125,21 @@ window.QUIZZES.cpp = {
     // ---- Section 5
     {
       type: "mc",
+      level: "beginner",
+      q: "In `int x = 5;`, which part is the **rvalue**?",
+      choices: [
+        "`5` — a temporary with no name and no address (`&5` is illegal)",
+        "`x` — it holds the value",
+        "`int` — the type",
+        "The whole statement"
+      ],
+      answer: 0,
+      explain: "An rvalue is a temporary: no name, no address, doesn't persist. `x` is an lvalue — it has a name and `&x` works. This split is the foundation for rvalue references (`int&&`) and move semantics.",
+      section: 5
+    },
+    {
+      type: "mc",
+      level: "intermediate",
       q: "Which statement is a compile error?",
       code: "int x = 5;\nint&  a = x;   // A\nint&& b = 5;   // B\nint&  c = 5;   // C",
       choices: [
@@ -118,6 +154,7 @@ window.QUIZZES.cpp = {
     },
     {
       type: "fill",
+      level: "beginner",
       q: "What kind of value has a name and an address that persists — the opposite of an rvalue? (one word)",
       accept: ["lvalue", "an lvalue"],
       answerDisplay: "an `lvalue`",
@@ -127,6 +164,7 @@ window.QUIZZES.cpp = {
     // ---- Section 6
     {
       type: "mc",
+      level: "intermediate",
       q: "In a range-based for loop, why is `auto&&` often the safest choice?",
       code: "for (auto&& item : collection) { }",
       choices: [
@@ -139,9 +177,25 @@ window.QUIZZES.cpp = {
       explain: "`auto&&` is a universal (forwarding) reference: it deduces to `T&` for lvalues and `T&&` for rvalues, so it binds to anything a container yields — including proxy/temporary elements — without an unwanted copy.",
       section: 6
     },
+    {
+      type: "mc",
+      level: "intermediate",
+      q: "What do these two declarations deduce to?",
+      code: "int x = 1;\nauto&& a = x;    // ?\nauto&& b = 5;    // ?",
+      choices: [
+        "`a` becomes `int&` (lvalue source), `b` becomes `int&&` (rvalue source)",
+        "Both become `int&&`",
+        "Both become `int&`",
+        "`a` is `int`, `b` is a compile error"
+      ],
+      answer: 0,
+      explain: "`auto&&` adapts to what it binds: an lvalue collapses it to `int&`, an rvalue makes it `int&&` (with lifetime extension for temporaries). Note the same `&&` on a CONCRETE type (`Widget&&`) is a plain rvalue reference — only `auto&&`/`T&&` are universal.",
+      section: 6
+    },
     // ---- Section 7
     {
       type: "mc",
+      level: "intermediate",
       q: "What does `std::move(x)` actually do?",
       choices: [
         "Nothing but cast `x` to an rvalue reference — the real moving is done by a move constructor/assignment",
@@ -153,9 +207,25 @@ window.QUIZZES.cpp = {
       explain: "`std::move` moves nothing — it's just `static_cast<T&&>(x)`, stripping the name so the value binds to move operations. The actual stealing happens in the move constructor/assignment (e.g. `vector`'s), which is why `a.size()` is 0 after `vector b = std::move(a)`.",
       section: 7
     },
+    {
+      type: "mc",
+      level: "beginner",
+      q: "What does `a.size()` print after this?",
+      code: "std::vector<int> a = {1, 2, 3};\nstd::vector<int> b = std::move(a);\nstd::cout << a.size();",
+      choices: [
+        "`0` — vector's move constructor stole a's contents, leaving it empty",
+        "`3` — moving copies the data",
+        "Undefined — reading a moved-from vector crashes",
+        "It doesn't compile"
+      ],
+      answer: 0,
+      explain: "The move constructor steals `a`'s internal buffer into `b`, leaving `a` in a valid but empty state — verified `a.size() == 0`. That's the whole point of moving: transfer instead of the deep copy a plain `b = a` would do.",
+      section: 7
+    },
     // ---- Section 8
     {
       type: "mc",
+      level: "beginner",
       q: "What are the FIVE special member functions in the Rule of 5?",
       choices: [
         "Destructor, copy ctor, copy assignment, move ctor, move assignment",
@@ -169,6 +239,7 @@ window.QUIZZES.cpp = {
     },
     {
       type: "fill",
+      level: "beginner",
       q: "Which 'Rule of N' is the modern recommended default — own no raw resources and let the compiler generate everything? (a number)",
       accept: ["0", "rule of 0", "zero", "rule of zero"],
       answerDisplay: "Rule of 0",
@@ -178,6 +249,7 @@ window.QUIZZES.cpp = {
     // ---- Section 9
     {
       type: "mc",
+      level: "intermediate",
       q: "Which members MUST be initialized in a constructor's initializer list (cannot be assigned in the body)?",
       code: "const int id_;   // ?\nint& ref_;       // ?\nBar member_;     // Bar has no default ctor",
       choices: [
@@ -190,9 +262,25 @@ window.QUIZZES.cpp = {
       explain: "const members and references must be initialized (they can't be default-initialized then reassigned), and a member with no default constructor has nothing to default-init to. All three require the initializer list. Body assignment would default-init first, then overwrite — impossible for these.",
       section: 9
     },
+    {
+      type: "mc",
+      level: "intermediate",
+      q: "What is the real difference between these two constructors?",
+      code: "Buffer(int size) : data_(new int[size]), size_(size) {}   // A\nBuffer(int size) { data_ = new int[size]; size_ = size; }  // B",
+      choices: [
+        "A initializes the members directly; B default-initializes first THEN overwrites — two steps",
+        "They compile to identical code",
+        "B is faster because assignment is cheaper",
+        "A only works for pointers"
+      ],
+      answer: 0,
+      explain: "The initializer list (A) constructs each member directly with its value. Body assignment (B) first default-initializes every member, then assigns over it — wasted work for class-type members, and impossible for const members, references, and types without default constructors.",
+      section: 9
+    },
     // ---- Section 10
     {
       type: "mc",
+      level: "intermediate",
       q: "What distinguishes the move constructor from move assignment?",
       code: "Widget b = std::move(a);   // (1)\nWidget c(99);\nc = std::move(a);          // (2)",
       choices: [
@@ -207,6 +295,7 @@ window.QUIZZES.cpp = {
     },
     {
       type: "fill",
+      level: "advanced",
       q: "Which specifier must a move constructor have for STL containers (like vector on reallocation) to prefer moving over copying?",
       accept: ["noexcept"],
       answerDisplay: "`noexcept`",
@@ -216,6 +305,7 @@ window.QUIZZES.cpp = {
     // ---- Section 11
     {
       type: "mc",
+      level: "beginner",
       q: "Which components are part of the original STL (now within the C++ Standard Library)?",
       choices: [
         "Containers, algorithms, and iterators",
@@ -230,6 +320,7 @@ window.QUIZZES.cpp = {
     // ---- Section 12
     {
       type: "mc",
+      level: "beginner",
       q: "Which container gives average O(1) key lookup using a hash?",
       choices: [
         "`std::unordered_map`",
@@ -242,7 +333,22 @@ window.QUIZZES.cpp = {
       section: 12
     },
     {
+      type: "mc",
+      level: "beginner",
+      q: "Which container is LIFO — the last element pushed is the first popped?",
+      choices: [
+        "`std::stack`",
+        "`std::queue`",
+        "`std::deque`",
+        "`std::priority_queue`"
+      ],
+      answer: 0,
+      explain: "`std::stack` is LIFO; `std::queue` is FIFO; `std::priority_queue` always has the largest element on top; `std::deque` is a general container with fast insert at both ends.",
+      section: 12
+    },
+    {
       type: "fill",
+      level: "beginner",
       q: "Which STL container is the default go-to dynamic array?",
       accept: ["std::vector", "vector"],
       answerDisplay: "`std::vector`",
@@ -252,6 +358,7 @@ window.QUIZZES.cpp = {
     // ---- Section 13
     {
       type: "mc",
+      level: "beginner",
       q: "For `template <typename T> T max_of(T a, T b)`, what does `max_of(3, 5)` do?",
       choices: [
         "Deduces `T = int` implicitly from the arguments",
@@ -263,9 +370,25 @@ window.QUIZZES.cpp = {
       explain: "Template type parameters are deduced implicitly from the call arguments, so `max_of(3, 5)` gives `T = int`. You can also specify explicitly: `max_of<double>(3, 5)`.",
       section: 13
     },
+    {
+      type: "mc",
+      level: "advanced",
+      q: "With the SINGLE-parameter template below, what does `max_of(3, 5.0)` do?",
+      code: "template <typename T>\nT max_of(T a, T b) { return a > b ? a : b; }\n\nmax_of(3, 5.0);   // int and double",
+      choices: [
+        "Compile error — T deduces to int from `3` but double from `5.0`, and the deductions conflict",
+        "T becomes double; the int is promoted automatically",
+        "T becomes int; the double is truncated",
+        "It works and returns 5.0"
+      ],
+      answer: 0,
+      explain: "Each argument must deduce the SAME T, and int vs double conflict — deduction fails. Fixes: call `max_of<double>(3, 5.0)` explicitly, or use two type parameters (`template <typename T, typename U> auto max_of(T a, U b)`), which the summary shows for exactly this case.",
+      section: 13
+    },
     // ---- Section 14
     {
       type: "mc",
+      level: "intermediate",
       q: "What does the `&` do here, and what happens if you write to `a`, `b`, or `c`?",
       code: "struct P { int x, y, z; };\nP p{1, 2, 3};\nauto& [a, b, c] = p;",
       choices: [
@@ -280,6 +403,7 @@ window.QUIZZES.cpp = {
     },
     {
       type: "mc",
+      level: "beginner",
       q: "What is the most common everyday use of structured bindings?",
       code: "for (const auto& [key, value] : mymap) { }",
       choices: [
@@ -292,9 +416,24 @@ window.QUIZZES.cpp = {
       explain: "Iterating an associative container yields `pair<const Key, Value>`; `const auto& [key, value]` unpacks each pair cleanly instead of using `.first`/`.second`.",
       section: 14
     },
+    {
+      type: "mc",
+      level: "intermediate",
+      q: "What does `auto [a, b] = P{1, 2, 3};` do, where P has three members?",
+      choices: [
+        "Compile error — the binding count must match the member count exactly",
+        "Binds the first two members and ignores the third",
+        "Binds a=1 and b={2,3}",
+        "Runtime error"
+      ],
+      answer: 0,
+      explain: "Structured bindings must name EVERY member: `auto [a, b, c]` works, `auto [a, b]` is a compile error. For members you don't need, bind them anyway and use `_` by convention: `auto [a, _, c]`.",
+      section: 14
+    },
     // ---- Section 15
     {
       type: "mc",
+      level: "intermediate",
       q: "What determines the return type of `std::accumulate(v.begin(), v.end(), init)`?",
       choices: [
         "The type of the `init` argument",
@@ -306,9 +445,38 @@ window.QUIZZES.cpp = {
       explain: "The accumulator (and return) type is the type of `init`. `accumulate(b, e, 0)` returns int; `accumulate(b, e, 0.0)` returns double — a classic bug source when summing doubles with an int seed.",
       section: 15
     },
+    {
+      type: "mc",
+      level: "intermediate",
+      q: "`v` is a `std::vector<double>`. What's the subtle bug in `std::accumulate(v.begin(), v.end(), 0)`?",
+      choices: [
+        "The int `0` makes the accumulator an int — every partial sum gets truncated",
+        "accumulate doesn't work on doubles",
+        "It throws at runtime",
+        "Nothing — the result is a double"
+      ],
+      answer: 0,
+      explain: "The init argument's type IS the accumulator type. With `0` (int), each addition truncates back to int, silently losing the fractional parts. Write `0.0` to accumulate (and return) a double.",
+      section: 15
+    },
     // ---- Section 16
     {
       type: "mc",
+      level: "beginner",
+      q: "What does `class Derived : public Base` express?",
+      choices: [
+        "An is-a relationship — Base's full public interface stays public on Derived",
+        "A has-a relationship — Derived contains a Base member",
+        "Base's members all become private in Derived",
+        "Derived can only use Base's static members"
+      ],
+      answer: 0,
+      explain: "public inheritance is the is-a relationship: Base's public members stay public, protected stay protected. protected/private inheritance instead hide the interface from outside (and, for private, from grandchildren too).",
+      section: 16
+    },
+    {
+      type: "mc",
+      level: "advanced",
       q: "What problem does `virtual` inheritance solve?",
       code: "class Bird : virtual public Animal {};\nclass Fish : virtual public Animal {};\nclass Platypus : public Bird, public Fish {};",
       choices: [
@@ -323,6 +491,7 @@ window.QUIZZES.cpp = {
     },
     {
       type: "mc",
+      level: "intermediate",
       q: "With `class Derived : private Base`, what happens to Base's public members?",
       choices: [
         "They become private in Derived — hidden from outside AND from Derived's own subclasses",
@@ -337,6 +506,7 @@ window.QUIZZES.cpp = {
     // ---- Section 17
     {
       type: "mc",
+      level: "intermediate",
       q: "Why does deleting through a base pointer leak without a virtual destructor?",
       code: "class Animal { public: ~Animal() {} };        // NOT virtual\nclass Dog : public Animal { std::string name_; };\nAnimal* a = new Dog();\ndelete a;",
       choices: [
@@ -351,6 +521,7 @@ window.QUIZZES.cpp = {
     },
     {
       type: "mc",
+      level: "intermediate",
       q: "Roughly what happens to `sizeof` an object when its class gains its first virtual function?",
       code: "class Foo { int x; };                    // sizeof = 4\nclass Bar { int x; virtual ~Bar(){}; };  // sizeof = ?",
       choices: [
@@ -363,9 +534,24 @@ window.QUIZZES.cpp = {
       explain: "The first virtual function gives the class a vtable and every object a hidden vptr (8 bytes on 64-bit), so `sizeof` jumps — here 4 → 16 after alignment/padding.",
       section: 17
     },
+    {
+      type: "mc",
+      level: "beginner",
+      q: "When is a virtual destructor **not** needed?",
+      choices: [
+        "When the class is never used as a base class or through a base pointer/reference",
+        "Never — every class must have one",
+        "When the class has data members",
+        "When the class is small"
+      ],
+      answer: 0,
+      explain: "A virtual destructor matters only for polymorphic deletion (deleting a derived object through a base pointer). A class never used as a base, or whose exact type is always known, doesn't need one — and skipping it avoids the vptr size cost.",
+      section: 17
+    },
     // ---- Section 18
     {
       type: "mc",
+      level: "beginner",
       q: "When should you declare an explicit destructor?",
       choices: [
         "Only when the class directly owns a raw resource (e.g. a `new[]` pointer)",
@@ -380,6 +566,7 @@ window.QUIZZES.cpp = {
     // ---- Section 19
     {
       type: "mc",
+      level: "intermediate",
       q: "How far down an inheritance chain do you need to repeat `virtual` on the destructor?",
       code: "class Shape { public: virtual ~Shape() = default; };\nclass Circle : public Shape { public: ~Circle() override {} };\nclass FilledCircle : public Circle { public: ~FilledCircle() override {} };",
       choices: [
@@ -392,9 +579,25 @@ window.QUIZZES.cpp = {
       explain: "Declaring the base destructor `virtual` once makes every derived destructor implicitly virtual. `override` on the derived ones is optional but recommended for clarity. Deleting a `Shape*` to a FilledCircle runs ~FilledCircle → ~Circle → ~Shape.",
       section: 19
     },
+    {
+      type: "mc",
+      level: "advanced",
+      q: "In what ORDER do the destructors run here?",
+      code: "Shape* s = new FilledCircle();   // FilledCircle : Circle : Shape\ndelete s;                        // Shape's dtor is virtual",
+      choices: [
+        "`~FilledCircle()` → `~Circle()` → `~Shape()` — most-derived first, bottom-up",
+        "`~Shape()` → `~Circle()` → `~FilledCircle()` — base first",
+        "Only `~FilledCircle()` runs",
+        "The order is unspecified"
+      ],
+      answer: 0,
+      explain: "Destruction runs bottom-up: the most-derived destructor first, then each base in reverse construction order. (Construction is the mirror image: Shape → Circle → FilledCircle.) The virtual base destructor is what makes the chain start at the REAL type.",
+      section: 19
+    },
     // ---- Section 20
     {
       type: "mc",
+      level: "beginner",
       q: "What happens to `p1` after `std::unique_ptr<Dog> p2 = std::move(p1);`?",
       choices: [
         "`p1` becomes null — ownership is transferred, not duplicated",
@@ -408,6 +611,21 @@ window.QUIZZES.cpp = {
     },
     {
       type: "mc",
+      level: "beginner",
+      q: "With several `shared_ptr`s owning the same object, when is the object destroyed?",
+      choices: [
+        "When the LAST owner goes away — the reference count reaches zero",
+        "When the FIRST owner goes away",
+        "Never — shared objects leak by design",
+        "When you call delete on any of them"
+      ],
+      answer: 0,
+      explain: "shared_ptr copies share ownership via an atomic reference count: copy = refcount++, destruction = refcount--. Verified: with use_count 2, one owner leaving keeps the object alive; it's destroyed only when the count hits 0.",
+      section: 20
+    },
+    {
+      type: "mc",
+      level: "advanced",
       q: "Why use `std::weak_ptr` for a 'back' reference between two objects?",
       choices: [
         "It doesn't affect the reference count, so it breaks the shared_ptr↔shared_ptr cycle that would leak",
@@ -420,7 +638,22 @@ window.QUIZZES.cpp = {
       section: 20
     },
     {
+      type: "mc",
+      level: "intermediate",
+      q: "What does `w.lock()` return on a `std::weak_ptr` whose object has already been destroyed?",
+      choices: [
+        "An empty/null `shared_ptr` — no crash, you just check it before use",
+        "A dangling pointer to freed memory",
+        "It throws an exception",
+        "It resurrects the object"
+      ],
+      answer: 0,
+      explain: "`.lock()` is what makes weak_ptr safe: it atomically produces a temporary owning shared_ptr, or an EMPTY one if the object is gone (`w.expired()` true). The `if (auto locked = w.lock()) { ... }` pattern guards all access.",
+      section: 20
+    },
+    {
       type: "fill",
+      level: "beginner",
       q: "Which factory function should you prefer over `new` to create a `unique_ptr<T>`?",
       accept: ["std::make_unique", "make_unique", "std::make_unique<T>", "make_unique<T>"],
       answerDisplay: "`std::make_unique`",
@@ -430,6 +663,7 @@ window.QUIZZES.cpp = {
     // ---- Section 21
     {
       type: "mc",
+      level: "advanced",
       q: "You write a custom copy constructor for a class that has both a raw pointer AND a `std::vector` member. What must you handle?",
       choices: [
         "Every member yourself — including the vector — because writing one copy op stops the compiler auto-generating it",
@@ -444,6 +678,7 @@ window.QUIZZES.cpp = {
     // ---- Section 22
     {
       type: "mc",
+      level: "intermediate",
       q: "What does `const int* p` mean (read right-to-left)?",
       code: "const int* p1;   // ?\nint* const p2;   // ?",
       choices: [
@@ -458,6 +693,7 @@ window.QUIZZES.cpp = {
     },
     {
       type: "mc",
+      level: "intermediate",
       q: "What does `auto` do to top-level const when deducing a type?",
       code: "const int ci = 100;\nauto a1 = ci;   // type of a1?",
       choices: [
@@ -472,15 +708,41 @@ window.QUIZZES.cpp = {
     },
     {
       type: "fill",
+      level: "intermediate",
       q: "Which keyword lets a data member be modified even inside a `const` member function?",
       accept: ["mutable"],
       answerDisplay: "`mutable`",
       explain: "A `mutable` member (e.g. a cache counter) can be changed even through a const method or on a const object — the escape hatch for logically-const-but-physically-changing state.",
       section: 22
     },
+    {
+      type: "fill",
+      level: "beginner",
+      q: "Which keyword, placed AFTER a member function's signature, promises the method won't modify the object's members?",
+      accept: ["const"],
+      answerDisplay: "`const`",
+      explain: "`int getValue() const { ... }` is a const member function — it can't modify non-mutable members, and it's the ONLY kind of method callable on a const object (`const Widget cw; cw.getValue()` OK, `cw.setValue(10)` error).",
+      section: 22
+    },
+    {
+      type: "mc",
+      level: "advanced",
+      q: "Why is `const auto&` called the 'universal safe read-only binding'?",
+      code: "const auto& a4 = x;",
+      choices: [
+        "It binds to lvalues, rvalues (extending their lifetime), and const sources alike — always read-only, never a copy",
+        "It's the only binding that compiles for all types",
+        "It makes the source variable const too",
+        "It's a copy that can't be modified"
+      ],
+      answer: 0,
+      explain: "A const reference can bind an lvalue, a temporary (rvalue — with lifetime extension), or a const source, and never allows modification through it. That's also why `const T&` is the standard way to pass read-only arguments cheaply.",
+      section: 22
+    },
     // ---- Section 23
     {
       type: "mc",
+      level: "advanced",
       q: "Given `typedef char* PChar;`, what does `const PChar cstr` actually lock?",
       choices: [
         "The pointer itself (`char* const`) — the chars remain mutable",
@@ -494,6 +756,7 @@ window.QUIZZES.cpp = {
     },
     {
       type: "mc",
+      level: "advanced",
       q: "Why is `refB` read-only here, given the same `auto&` syntax makes `refA` writable?",
       code: "int x = 1;\nconst int y = 2;\nauto& refA = x;   // int&\nauto& refB = y;   // ?",
       choices: [
@@ -509,6 +772,7 @@ window.QUIZZES.cpp = {
     // ---- Section 24
     {
       type: "mc",
+      level: "intermediate",
       q: "Why must `operator<<` for stream output be a NON-member function?",
       code: "std::ostream& operator<<(std::ostream& os, const Vec2& v);",
       choices: [
@@ -523,6 +787,7 @@ window.QUIZZES.cpp = {
     },
     {
       type: "mc",
+      level: "intermediate",
       q: "How does the compiler tell prefix `++c` from postfix `c++` in an overload?",
       choices: [
         "Postfix takes a dummy `int` parameter; prefix takes none",
@@ -536,6 +801,7 @@ window.QUIZZES.cpp = {
     },
     {
       type: "mc",
+      level: "intermediate",
       q: "What does the C++20 defaulted spaceship operator generate?",
       code: "auto operator<=>(const Score&) const = default;",
       choices: [
@@ -550,15 +816,32 @@ window.QUIZZES.cpp = {
     },
     {
       type: "fill",
+      level: "beginner",
       q: "An object that overloads `operator()` so it can be 'called like a function' is commonly called a ______.",
       accept: ["functor", "function object", "a functor", "function-object"],
       answerDisplay: "functor (function object)",
       explain: "A class with `operator()` (like `Multiplier` where `times3(7)` gives 21) is a functor. Lambdas are compiler-generated functors.",
       section: 24
     },
+    {
+      type: "mc",
+      level: "beginner",
+      q: "Why does `operator+=` return `*this` by reference?",
+      code: "Vec2& operator+=(const Vec2& other) {\n    x_ += other.x_; y_ += other.y_;\n    return *this;\n}",
+      choices: [
+        "So calls can be chained — the result is the modified object itself, ready for the next operation",
+        "To avoid a compile error — operators must return references",
+        "To make the operator virtual",
+        "It returns a copy either way"
+      ],
+      answer: 0,
+      explain: "Returning `*this` by reference means the expression evaluates to the (modified) object, enabling chaining like `(a += b) += c` — the same reason `operator<<` returns the stream so `cout << a << b` works.",
+      section: 24
+    },
     // ---- Section 25
     {
       type: "mc",
+      level: "advanced",
       q: "Can you change the arity (number of operands) of `operator+`?",
       choices: [
         "No — binary operators always take 2 operands; member vs non-member only changes how many params you write explicitly",
@@ -572,6 +855,7 @@ window.QUIZZES.cpp = {
     },
     {
       type: "mc",
+      level: "intermediate",
       q: "Which operator is the exception that CAN be overloaded with any number of parameters?",
       choices: [
         "`operator()` — the function-call operator has no fixed arity",
@@ -583,9 +867,25 @@ window.QUIZZES.cpp = {
       explain: "`operator()` is special: you can overload it with zero, one, or many parameters (like an `Adder` functor with 0–3 args). Every other operator has fixed arity.",
       section: 25
     },
+    {
+      type: "mc",
+      level: "advanced",
+      q: "What happens when you try to compile this member operator?",
+      code: "class Vec2 {\n    Vec2 operator+(const Vec2& rhs, int extra) const { ... }\n};",
+      choices: [
+        "Compile error: a binary member operator+ 'must have either zero or one argument' — *this already fills the left slot",
+        "It compiles; `extra` defaults to 0",
+        "It compiles as a ternary operator",
+        "Runtime error when called"
+      ],
+      answer: 0,
+      explain: "A member binary operator gets its LEFT operand implicitly via *this, so exactly ONE explicit parameter is allowed. You cannot extend an operator's arity — verified error: 'operator+(const Vec2&, int) must have either zero or one argument'.",
+      section: 25
+    },
     // ---- Section 26
     {
       type: "mc",
+      level: "intermediate",
       q: "A vtable exists once per ____, and a vptr exists once per ____.",
       choices: [
         "class ; object",
@@ -599,6 +899,7 @@ window.QUIZZES.cpp = {
     },
     {
       type: "mc",
+      level: "advanced",
       q: "What does 'object slicing' do to polymorphism?",
       code: "Dog dog;\nAnimal sliced = dog;   // copy into a plain Animal\nsliced.speak();",
       choices: [
@@ -613,6 +914,7 @@ window.QUIZZES.cpp = {
     },
     {
       type: "mc",
+      level: "intermediate",
       q: "What does `dynamic_cast<Dog*>(a)` return when `a` actually points to a `Cat`?",
       choices: [
         "`nullptr` — the runtime RTTI check fails safely",
@@ -625,7 +927,65 @@ window.QUIZZES.cpp = {
       section: 26
     },
     {
+      type: "mc",
+      level: "advanced",
+      q: "And what does the REFERENCE form `dynamic_cast<Dog&>(*a2)` do when `*a2` is really a Cat?",
+      choices: [
+        "Throws `std::bad_cast` — there's no such thing as a null reference to return",
+        "Returns a null reference",
+        "Returns a reference to a default-constructed Dog",
+        "Compile error — dynamic_cast only works on pointers"
+      ],
+      answer: 0,
+      explain: "The pointer form reports failure with nullptr; the reference form CAN'T (no null references), so it throws `std::bad_cast` instead. Verified: catching `const std::bad_cast&` prints \"std::bad_cast\". Also remember: the source type must be polymorphic.",
+      section: 26
+    },
+    {
+      type: "mc",
+      level: "advanced",
+      q: "`d1` and `d2` are two `Dog` objects; `c1` is a `Cat`. Comparing their hidden vptrs, what holds?",
+      code: "Dog d1, d2;\nCat c1;\n// vptr_d1, vptr_d2, vptr_c1 read from the objects",
+      choices: [
+        "`vptr_d1 == vptr_d2` (same class → SAME vtable) but `vptr_d1 != vptr_c1`",
+        "All three differ — every object gets its own vtable",
+        "All three are equal — one global vtable",
+        "vptrs can't be compared"
+      ],
+      answer: 0,
+      explain: "The vtable is per-CLASS static data; every instance of Dog points at the one Dog vtable. Verified by reading the vptrs directly: d1 and d2 share an address, Cat's differs. (Educational only — ABI-specific, never do this in real code.)",
+      section: 26
+    },
+    {
+      type: "mc",
+      level: "advanced",
+      q: "`Duck : public Flyer, public Swimmer` (both bases polymorphic). Why do `Flyer* f = &duck` and `Swimmer* w = &duck` hold DIFFERENT addresses?",
+      choices: [
+        "Duck has TWO vptrs (one per base subobject); converting Duck* to Swimmer* silently adjusts `this` past the Flyer part",
+        "One of the pointers is dangling",
+        "They actually hold the same address",
+        "Multiple inheritance copies the object"
+      ],
+      answer: 0,
+      explain: "With multiple polymorphic bases, the object contains one base subobject (and vptr) per base — sizeof(Duck) is 16 vs 8 for one base. The Swimmer subobject starts 8 bytes in, so the compiler adjusts the pointer during conversion. Both still refer to the same Duck.",
+      section: 26
+    },
+    {
+      type: "mc",
+      level: "advanced",
+      q: "What's the difference between `typeid(*a1)` and `typeid(a1)` when `Animal* a1 = new Dog();`?",
+      choices: [
+        "`typeid(*a1)` is resolved at RUNTIME via RTTI → Dog; `typeid(a1)` is the pointer's static type → Animal*",
+        "Both give Dog",
+        "Both give Animal*",
+        "`typeid` doesn't work on polymorphic types"
+      ],
+      answer: 0,
+      explain: "Dereferencing gives a polymorphic glvalue, so typeid uses the same RTTI slot dynamic_cast uses → the REAL type (Dog). On the pointer itself it's compile-time static → Animal*. Note `.name()` returns a mangled string like \"3Dog\" — implementation-defined.",
+      section: 26
+    },
+    {
       type: "fill",
+      level: "beginner",
       q: "Which keyword must a base-class function have so a call through a base pointer dispatches to the derived override at runtime?",
       accept: ["virtual"],
       answerDisplay: "`virtual`",
@@ -635,6 +995,7 @@ window.QUIZZES.cpp = {
     // ---- Section 27
     {
       type: "mc",
+      level: "beginner",
       q: "What does `std::optional<T>` express, and how is it stored?",
       choices: [
         "'May or may not have a value', stored inline with no heap allocation",
@@ -648,6 +1009,7 @@ window.QUIZZES.cpp = {
     },
     {
       type: "mc",
+      level: "intermediate",
       q: "What does `std::get<int>(v)` do when the variant currently holds a `std::string`?",
       code: "std::variant<int, double, std::string> v = std::string(\"hi\");\nstd::get<int>(v);",
       choices: [
@@ -661,7 +1023,36 @@ window.QUIZZES.cpp = {
       section: 27
     },
     {
+      type: "mc",
+      level: "intermediate",
+      q: "What does a default-constructed `std::variant<int, double, std::string> v;` hold?",
+      choices: [
+        "The FIRST alternative, default-constructed — an int of value 0, so `v.index()` is 0",
+        "Nothing — it starts empty",
+        "All three alternatives at once",
+        "It doesn't compile without an initializer"
+      ],
+      answer: 0,
+      explain: "A variant always holds exactly one alternative; default construction picks the FIRST one (which must be default-constructible — if it isn't, put `std::monostate` first to provide an empty-like state).",
+      section: 27
+    },
+    {
+      type: "mc",
+      level: "intermediate",
+      q: "How does `std::get_if<int>(&v)` differ from `std::get<int>(v)`?",
+      choices: [
+        "`get_if` never throws — it returns a pointer to the value, or `nullptr` if int isn't the active type",
+        "They are identical",
+        "`get_if` converts the value to int if needed",
+        "`get_if` removes the value from the variant"
+      ],
+      answer: 0,
+      explain: "`get_if` takes a POINTER to the variant and returns a pointer result: valid if that type is active, `nullptr` otherwise — perfect for `if (auto* p = std::get_if<std::string>(&v)) { ... }`. `get` returns a reference but throws `bad_variant_access` on mismatch.",
+      section: 27
+    },
+    {
       type: "fill",
+      level: "advanced",
       q: "What special type do you put FIRST in a variant so it's default-constructible when the real first alternative isn't?",
       accept: ["std::monostate", "monostate"],
       answerDisplay: "`std::monostate`",
@@ -671,6 +1062,7 @@ window.QUIZZES.cpp = {
     // ---- Section 28
     {
       type: "mc",
+      level: "advanced",
       q: "In the `overloaded` pattern, why is `using Ts::operator()...;` required?",
       code: "template<class... Ts> struct overloaded : Ts... { using Ts::operator()...; };",
       choices: [
@@ -685,6 +1077,7 @@ window.QUIZZES.cpp = {
     },
     {
       type: "mc",
+      level: "advanced",
       q: "Conceptually, how does `std::visit(visitor, v)` dispatch?",
       choices: [
         "It switches on `v.index()` and calls `visitor(std::get<I>(v))` for the active I (jump-table style)",
@@ -698,6 +1091,7 @@ window.QUIZZES.cpp = {
     },
     {
       type: "mc",
+      level: "advanced",
       q: "Are two lambdas with identical bodies the same type?",
       code: "auto lam1 = [](int x){ return x*2; };\nauto lam2 = [](int x){ return x*2; };",
       choices: [
@@ -710,9 +1104,24 @@ window.QUIZZES.cpp = {
       explain: "Each lambda expression creates its own unique unnamed closure type, even if the code is identical. This is exactly why `overloaded` uses multiple inheritance — to combine several distinct lambda types into one object.",
       section: 28
     },
+    {
+      type: "mc",
+      level: "advanced",
+      q: "What is the deduction guide `template<class... Ts> overloaded(Ts...) -> overloaded<Ts...>;` for?",
+      choices: [
+        "It tells the compiler how to deduce Ts... from `overloaded{lambda1, lambda2}` — without it, CTAD fails to compile (pre-C++20)",
+        "It defines the constructor",
+        "It's an optional optimization hint",
+        "It converts the lambdas to std::function"
+      ],
+      answer: 0,
+      explain: "`overloaded` has no constructor — braced init relies on aggregate initialization, and the compiler still needs to know WHAT Ts... is. The deduction guide provides that rule. Verified: removing it gives 'class template argument deduction failed'.",
+      section: 28
+    },
     // ---- Section 29
     {
       type: "mc",
+      level: "intermediate",
       q: "What does `std::expected<T, E>` hold, and what's its advantage over `std::optional<T>`?",
       choices: [
         "EITHER a success value T OR an error value E — so it carries WHY it failed, unlike optional",
@@ -727,6 +1136,7 @@ window.QUIZZES.cpp = {
     // ---- Section 30
     {
       type: "mc",
+      level: "intermediate",
       q: "What happens if a `std::thread` object is destroyed while still joinable (never joined or detached)?",
       code: "std::thread t(work);\n// no join(), no detach()\nreturn 0;   // t destroyed here",
       choices: [
@@ -741,6 +1151,7 @@ window.QUIZZES.cpp = {
     },
     {
       type: "mc",
+      level: "intermediate",
       q: "How do you pass a variable by reference to a `std::thread`'s function, given args are copied by default?",
       code: "void increment(int& c) { c += 100; }\nstd::thread t(increment, ______ );",
       choices: [
@@ -755,6 +1166,7 @@ window.QUIZZES.cpp = {
     },
     {
       type: "mc",
+      level: "intermediate",
       q: "Which fix is lightest for a simple shared counter, guaranteeing an indivisible read-modify-write with no mutex?",
       choices: [
         "`std::atomic<int>`",
@@ -768,6 +1180,7 @@ window.QUIZZES.cpp = {
     },
     {
       type: "mc",
+      level: "intermediate",
       q: "How do you get a RETURN VALUE back from concurrent work, which `std::thread` can't provide?",
       choices: [
         "`std::async` returns a `std::future<T>`; call `.get()` to block and retrieve the value",
@@ -780,7 +1193,38 @@ window.QUIZZES.cpp = {
       section: 30
     },
     {
+      type: "mc",
+      level: "advanced",
+      q: "What happens when you call `.get()` a SECOND time on the same `std::future`?",
+      code: "std::future<int> fut = std::async(std::launch::async, slowSquare, 12);\nint a = fut.get();   // 144\nint b = fut.get();   // ?",
+      choices: [
+        "Throws `std::future_error` — the result was consumed and moved out on the first call",
+        "Returns 144 again from a cache",
+        "Blocks forever waiting for a new result",
+        "Returns 0"
+      ],
+      answer: 0,
+      explain: "`.get()` is one-time use: it moves the result out and disconnects the future from its shared state. Verified: the second call throws `std::future_error: No associated state`.",
+      section: 30
+    },
+    {
+      type: "mc",
+      level: "advanced",
+      q: "Why does `cv.wait(...)` require a `std::unique_lock` instead of a `std::lock_guard`?",
+      code: "std::unique_lock<std::mutex> lock(mtx);\ncv.wait(lock, [] { return !q.empty() || done; });",
+      choices: [
+        "`wait` must UNLOCK the mutex while sleeping and RELOCK it on wake — lock_guard can't be unlocked mid-lifetime",
+        "lock_guard is deprecated",
+        "unique_lock is faster",
+        "It's arbitrary; either works"
+      ],
+      answer: 0,
+      explain: "While a thread sleeps in `cv.wait`, other threads must be able to take the mutex to produce data and notify. So wait() unlocks it, sleeps, and relocks on wake — operations `lock_guard` (acquire-on-construct, release-on-destruct only) doesn't support. The predicate form also guards against spurious wakeups.",
+      section: 30
+    },
+    {
       type: "fill",
+      level: "advanced",
       q: "Which C++17 lock locks multiple mutexes together with a deadlock-avoiding algorithm?",
       accept: ["std::scoped_lock", "scoped_lock"],
       answerDisplay: "`std::scoped_lock`",
