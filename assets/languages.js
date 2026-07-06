@@ -11,9 +11,9 @@ window.LANGUAGES = [
   {
     id: "cpp",
     name: "C++",
-    desc: "Core syntax and techniques from the C++ study summary.",
+    desc: "Conversions, rvalues, move semantics, smart pointers, const, operators, vtables, variants, threads & more.",
     md: "cpp_study_summary.md",
-    quiz: false,
+    quiz: true,
   },
   {
     id: "cuda",
