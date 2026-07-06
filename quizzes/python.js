@@ -21,7 +21,14 @@ window.QUIZZES.python = {
     15: "functools Essentials",
     16: "Slicing",
     17: "Copy Semantics: Shallow vs Deep",
-    18: "The GIL, Threading, Multiprocessing & Asyncio"
+    18: "The GIL, Threading, Multiprocessing & Asyncio",
+    19: "collections Essentials",
+    20: "Structural Pattern Matching (match/case)",
+    21: "enum — Named Constants",
+    22: "pathlib & File I/O",
+    23: "properties, classmethod & staticmethod",
+    24: "itertools Essentials",
+    25: "Generators Advanced — yield from & send"
   },
   questions: [
     // ---- Section 1
@@ -900,6 +907,336 @@ window.QUIZZES.python = {
       answer: 0,
       explain: "asyncio uses cooperative scheduling: one thread runs an event loop, and each coroutine pauses at `await`, letting others run. Two 0.3s async sleeps finish in ~0.3s total — matching threading's I/O speedup with no OS threads, and it scales to far more concurrent waits.",
       section: 18
+    },
+    // ---- Section 19
+    {
+      type: "mc",
+      level: "beginner",
+      q: "What problem does `defaultdict(list)` solve compared to a plain dict?",
+      code: "by_letter = defaultdict(list)\nfor w in words:\n    by_letter[w[0]].append(w)",
+      choices: [
+        "A missing key gets a fresh `list()` automatically instead of raising KeyError",
+        "It keeps keys sorted alphabetically",
+        "It makes lookups faster",
+        "It prevents duplicate values"
+      ],
+      answer: 0,
+      explain: "A plain dict raises KeyError on `plain[\"a\"].append(...)` when the key is new (verified). defaultdict calls its factory on first access to a missing key, so grouping needs no 'if key not in dict' dance. `defaultdict(int)` similarly makes counters (missing keys start at 0).",
+      section: 19
+    },
+    {
+      type: "mc",
+      level: "beginner",
+      q: "For `c = Counter(\"mississippi\")`, what are `c.most_common(2)` and `c[\"z\"]`?",
+      choices: [
+        "`[('i', 4), ('s', 4)]` and `0` — missing keys count as zero, no KeyError",
+        "`[('i', 4), ('s', 4)]` and a KeyError",
+        "`[('m', 1), ('i', 4)]` and `None`",
+        "`{'i': 4, 's': 4}` and `0`"
+      ],
+      answer: 0,
+      explain: "Counter counts everything ('i' and 's' appear 4× each — verified) and, unlike a plain dict, returns 0 for missing keys instead of raising. Counters also support +/- multiset arithmetic (negative results are dropped).",
+      section: 19
+    },
+    {
+      type: "mc",
+      level: "intermediate",
+      q: "What is `ring` after this loop?",
+      code: "ring = deque(maxlen=3)\nfor i in range(1, 6):\n    ring.append(i)",
+      choices: [
+        "`deque([3, 4, 5], maxlen=3)` — old items fell off the left automatically",
+        "`deque([1, 2, 3], maxlen=3)` — appends beyond maxlen are ignored",
+        "An IndexError on the 4th append",
+        "`deque([5, 4, 3], maxlen=3)`"
+      ],
+      answer: 0,
+      explain: "A deque with maxlen is a ring buffer: appending to a full deque silently discards from the OPPOSITE end (verified: 1 and 2 are gone). deques also give O(1) append/pop at BOTH ends, where a list's front operations are O(n).",
+      section: 19
+    },
+    {
+      type: "mc",
+      level: "intermediate",
+      q: "For `Point = namedtuple(\"Point\", [\"x\", \"y\"]); p = Point(3, 4)`, which operation FAILS?",
+      choices: [
+        "`p.x = 99` — namedtuples are immutable (AttributeError)",
+        "`p[1]` — index access",
+        "`x, y = p` — unpacking",
+        "`p._asdict()` — dict conversion"
+      ],
+      answer: 0,
+      explain: "A namedtuple is still a tuple: name access (p.x), index access (p[1] == 4), and unpacking all work (verified), but assignment raises AttributeError: can't set attribute (verified). Need mutation or methods? Use @dataclass (section 14).",
+      section: 19
+    },
+    // ---- Section 20
+    {
+      type: "mc",
+      level: "beginner",
+      q: "How does Python's `match` differ from C++ `switch` regarding fallthrough?",
+      choices: [
+        "Exactly ONE case runs and there is no fallthrough — no `break` needed",
+        "Cases fall through unless you write `break`",
+        "All matching cases run",
+        "match requires a `break` in every case"
+      ],
+      answer: 0,
+      explain: "The first matching case runs and the match ends — fallthrough doesn't exist. match also works on any type (not just integers) and can destructure while matching: sequences, mappings, and class patterns.",
+      section: 20
+    },
+    {
+      type: "mc",
+      level: "intermediate",
+      q: "Which case matches `[7, 8, 9, 10]`, and what gets captured?",
+      code: "match value:\n    case [x, y]:\n        ...\n    case [first, *rest]:\n        ...",
+      choices: [
+        "`[first, *rest]` — first=7, rest=[8, 9, 10] (star works like unpacking)",
+        "`[x, y]` — x=7, y=8, extra items ignored",
+        "Neither; lists need a special pattern",
+        "Both cases run"
+      ],
+      answer: 0,
+      explain: "`[x, y]` requires EXACTLY two elements, so a 4-element list falls through to `[first, *rest]`, which captures 7 and the remaining 3 items (verified). Mapping patterns work similarly: `{\"name\": name, **extra}`.",
+      section: 20
+    },
+    {
+      type: "mc",
+      level: "advanced",
+      q: "Why is `case RED:` (bare lowercase-style name) a trap when matching against a constant?",
+      choices: [
+        "A bare name is a CAPTURE pattern — it matches ANYTHING and binds it to that name",
+        "It raises a NameError if RED is undefined",
+        "It compares against the variable RED as expected",
+        "Bare names are syntax errors in case patterns"
+      ],
+      answer: 0,
+      explain: "In a pattern, a bare name never compares — it captures, so `case RED:` matches every value and shadows your constant. DOTTED names are compared: write `case Color.RED:` (or add a guard). One of the most common match-statement bugs.",
+      section: 20
+    },
+    // ---- Section 21
+    {
+      type: "mc",
+      level: "beginner",
+      q: "With `class Color(Enum): RED = auto()`, what is `Color.RED == 1`?",
+      choices: [
+        "`False` — an Enum member is NOT its numeric value",
+        "`True` — RED's value is 1",
+        "A TypeError",
+        "`True`, but only in Python 3.12+"
+      ],
+      answer: 0,
+      explain: "Enum members are typed singletons: `Color.RED.value == 1` but `Color.RED == 1` is False (verified) — accidental int comparisons can't succeed by coincidence. If you WANT int behavior, opt in with IntEnum (verified: Priority.HIGH > 2 is True).",
+      section: 21
+    },
+    {
+      type: "mc",
+      level: "intermediate",
+      q: "Which enum flavor lets members combine with `|` and test with `in` — e.g. permission masks?",
+      code: "rw = Perm.READ | Perm.WRITE\nPerm.READ in rw    # True\nPerm.EXEC in rw    # False",
+      choices: [
+        "`Flag`",
+        "`IntEnum`",
+        "Plain `Enum`",
+        "`namedtuple`"
+      ],
+      answer: 0,
+      explain: "`Flag` members are bitwise-combinable: auto() assigns powers of two (1, 2, 4...), `|` builds masks, and `in` tests membership (verified). Plain Enum members don't support `|`; IntEnum adds int comparisons but not mask semantics.",
+      section: 21
+    },
+    {
+      type: "fill",
+      level: "intermediate",
+      q: "Which decorator makes an Enum raise ValueError if two members share the same value?",
+      accept: ["@unique", "unique", "enum.unique", "@enum.unique"],
+      answerDisplay: "`@unique`",
+      explain: "Without @unique, `B = 1` after `A = 1` silently makes B an ALIAS of A. With it, class creation fails loudly — verified: 'ValueError: duplicate values found in <enum Dup>: B -> A'.",
+      section: 21
+    },
+    // ---- Section 22
+    {
+      type: "mc",
+      level: "beginner",
+      q: "How do you join paths with pathlib?",
+      choices: [
+        "With the `/` operator: `Path(base) / \"notes\" / \"todo.txt\"`",
+        "With `+`: `base + \"/notes/todo.txt\"`",
+        "Only with `os.path.join`",
+        "With `Path.append()`"
+      ],
+      answer: 0,
+      explain: "Path overloads `/` for joining — no string concatenation or os.path.join needed. The result is a Path object with methods: `.name`, `.stem`, `.suffix`, `.parent`, `.exists()`, `.stat()` (all verified).",
+      section: 22
+    },
+    {
+      type: "fill",
+      level: "beginner",
+      q: "Which Path method reads an entire file and returns it as one string?",
+      accept: ["read_text", "read_text()", ".read_text()", ".read_text", "p.read_text()"],
+      answerDisplay: "`.read_text()`",
+      explain: "`p.read_text()` (and its sibling `p.write_text(s)`) make whole-file I/O a one-liner — verified. For line-by-line streaming of big files, use `with open(p, encoding=\"utf-8\") as f: for line in f:` — file objects are lazy iterators.",
+      section: 22
+    },
+    {
+      type: "mc",
+      level: "intermediate",
+      q: "What's the difference between `dir.glob(\"*.md\")` and `dir.rglob(\"*.md\")`?",
+      choices: [
+        "`glob` matches only in that directory; `rglob` searches the whole subtree recursively",
+        "`rglob` is just a faster glob",
+        "`glob` returns strings, `rglob` returns Paths",
+        "`rglob` matches by regex instead of shell patterns"
+      ],
+      answer: 0,
+      explain: "Both use shell-style patterns; rglob descends into subdirectories (equivalent to `glob(\"**/*.md\")`). Verified: glob found only the local .txt files while rglob found the .md one level deeper.",
+      section: 22
+    },
+    // ---- Section 23
+    {
+      type: "mc",
+      level: "beginner",
+      q: "What does `@property` change about how a method is used?",
+      code: "class Temperature:\n    @property\n    def fahrenheit(self):\n        return self._celsius * 9 / 5 + 32\n\nt.fahrenheit     # note: no parentheses",
+      choices: [
+        "It's accessed like a plain attribute (no parentheses) but a function runs — computed on every access",
+        "It caches the value permanently",
+        "It makes the method static",
+        "It hides the method from subclasses"
+      ],
+      answer: 0,
+      explain: "Properties keep attribute syntax while running code — verified: t.fahrenheit recomputes from the current celsius (77.0, then 212.0 after t.celsius = 100). The idiom: start with plain attributes, upgrade to properties later without changing callers.",
+      section: 23
+    },
+    {
+      type: "mc",
+      level: "intermediate",
+      q: "A property has a getter but NO setter. What happens on assignment?",
+      code: "t.fahrenheit = 42",
+      choices: [
+        "`AttributeError: property ... has no setter` — it's read-only",
+        "The value is stored, shadowing the property",
+        "The getter is called with 42",
+        "Nothing; the assignment is silently ignored"
+      ],
+      answer: 0,
+      explain: "No setter = read-only computed attribute (verified error). Add `@fahrenheit.setter` to allow writes — setters are also where validation lives (verified: the celsius setter raises ValueError below absolute zero).",
+      section: 23
+    },
+    {
+      type: "mc",
+      level: "advanced",
+      q: "Why does a @classmethod constructor use `cls(...)` instead of hardcoding the class name?",
+      code: "class Base:\n    @classmethod\n    def create(cls):\n        return cls()\nclass Derived(Base): pass\n\nDerived.create()   # what type?",
+      choices: [
+        "`cls` is whichever class the call came through — `Derived.create()` builds a Derived, not a Base",
+        "It's only a style convention; both behave identically",
+        "cls is required syntax; Base() would not compile",
+        "cls makes the method thread-safe"
+      ],
+      answer: 0,
+      explain: "Verified: type(Derived.create()) is Derived. Hardcoding `return Base()` would break every subclass's inherited constructor. That's the difference from @staticmethod, which receives neither cls nor self.",
+      section: 23
+    },
+    // ---- Section 24
+    {
+      type: "mc",
+      level: "beginner",
+      q: "What does `list(it.chain([1, 2], \"ab\", (3,)))` return?",
+      choices: [
+        "`[1, 2, 'a', 'b', 3]` — concatenates any iterables lazily",
+        "`[[1, 2], 'ab', (3,)]`",
+        "`[1, 2, 'ab', 3]` — strings stay whole",
+        "A TypeError — chain needs same-type iterables"
+      ],
+      answer: 0,
+      explain: "chain flattens one level, yielding each element of each iterable in turn — mixed types are fine, and nothing is copied into a merged list until you materialize it (verified).",
+      section: 24
+    },
+    {
+      type: "mc",
+      level: "intermediate",
+      q: "Why did this groupby lose 'apple'?",
+      code: "data = [(\"fruit\", \"apple\"), (\"veg\", \"carrot\"), (\"fruit\", \"banana\")]\n{k: [v for _, v in g] for k, g in it.groupby(data, key=lambda t: t[0])}\n# {'fruit': ['banana'], 'veg': ['carrot']}   <- apple gone!",
+      choices: [
+        "groupby only groups CONSECUTIVE equal keys — the two fruit runs became separate groups and the dict kept only the last",
+        "groupby drops the first element by design",
+        "The lambda key is wrong",
+        "Dicts can't hold lists"
+      ],
+      answer: 0,
+      explain: "groupby is a run-length grouper, not a general one: unsorted input produces one group per RUN, and building a dict overwrites the earlier 'fruit' group (verified: apple lost). Sort by the same key first — or just use defaultdict(list) (section 19).",
+      section: 24
+    },
+    {
+      type: "mc",
+      level: "intermediate",
+      q: "What's the difference between `permutations(\"ABC\", 2)` and `combinations(\"ABC\", 2)`?",
+      choices: [
+        "permutations counts order (AB and BA both appear); combinations ignores it (only AB)",
+        "combinations allows repeated elements",
+        "permutations is lazy, combinations is eager",
+        "They're identical for r=2"
+      ],
+      answer: 0,
+      explain: "Verified: permutations('ABC', 2) gives 6 ordered pairs (AB, AC, BA, BC, CA, CB); combinations gives only the 3 unordered picks (AB, AC, BC). product() is the third sibling — full cartesian product across multiple iterables.",
+      section: 24
+    },
+    {
+      type: "mc",
+      level: "beginner",
+      q: "What happens with `list(itertools.count())`, and what's the safe pattern?",
+      choices: [
+        "It hangs forever — bound infinite iterators with `islice`, e.g. `islice(count(10, 5), 4)`",
+        "It returns the first 1000 numbers",
+        "It raises OverflowError",
+        "count() isn't iterable"
+      ],
+      answer: 0,
+      explain: "count/cycle/repeat are INFINITE lazy sources; materializing one never finishes. `list(islice(count(10, 5), 4))` == [10, 15, 20, 25] (verified). Same lazy-infinite model as C++20 views::iota | take.",
+      section: 24
+    },
+    // ---- Section 25
+    {
+      type: "mc",
+      level: "intermediate",
+      q: "What does `list(outer())` return?",
+      code: "def inner():\n    yield 1\n    yield 2\n    return \"inner done\"\n\ndef outer():\n    result = yield from inner()\n    yield f\"got: {result}\"",
+      choices: [
+        "`[1, 2, 'got: inner done']` — yield from passes values through AND captures inner's return value",
+        "`[1, 2]` — the return value is lost",
+        "`['inner done', 1, 2]`",
+        "A SyntaxError — generators can't return values"
+      ],
+      answer: 0,
+      explain: "`yield from` delegates: 1 and 2 flow through to the caller, then inner's `return` value (which normally hides inside StopIteration, invisible to for loops) becomes the value of the `yield from` expression (verified).",
+      section: 25
+    },
+    {
+      type: "mc",
+      level: "advanced",
+      q: "Why does the code below call `next(g)` before the first `send()`?",
+      code: "g = running_average()\nnext(g)          # <- why?\ng.send(10)       # 10.0\ng.send(20)       # 15.0",
+      choices: [
+        "PRIMING — the generator must run to its first `yield` before it can receive a value; send() first raises TypeError",
+        "It skips the first bad value",
+        "next() allocates the generator's memory",
+        "It's optional; send() works immediately"
+      ],
+      answer: 0,
+      explain: "`value = yield avg` can only RECEIVE once the generator is paused at that yield. send() to a just-started generator raises 'TypeError: can't send non-None value to a just-started generator'. Verified: after priming, send(10)/send(20)/send(60) return 10.0, 15.0, 30.0 — state persists across calls. This coroutine style is the ancestor of async/await.",
+      section: 25
+    },
+    {
+      type: "mc",
+      level: "advanced",
+      q: "What does `w.close()` do to a paused generator with a `try/finally`?",
+      code: "def worker():\n    try:\n        while True:\n            yield \"working\"\n    finally:\n        print(\"cleanup ran\")\n\nw = worker(); next(w)\nw.close()",
+      choices: [
+        "Raises GeneratorExit inside the generator at the paused yield — the finally block runs (verified: 'cleanup ran' prints)",
+        "Just marks it exhausted; finally never runs",
+        "Raises StopIteration in the caller",
+        "Nothing until garbage collection"
+      ],
+      answer: 0,
+      explain: "close() injects GeneratorExit at the paused yield, so cleanup code in finally is guaranteed — the generator counterpart of __exit__. Similarly, g.throw(exc) injects an arbitrary exception at the yield (verified: it propagates out if uncaught).",
+      section: 25
     }
   ]
 };

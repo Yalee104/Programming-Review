@@ -33,7 +33,14 @@ window.QUIZZES.cpp = {
     27: "std::optional & std::variant",
     28: "std::visit & the overloaded Pattern",
     29: "std::expected<T, E> (C++23)",
-    30: "Callables + std::thread + Synchronization"
+    30: "Callables + std::thread + Synchronization",
+    31: "Exception Handling — try/catch, Unwinding, RAII & noexcept",
+    32: "Lambda Captures In Depth",
+    33: "std::string_view",
+    34: "enum class vs Plain enum",
+    35: "The Four C++ Casts",
+    36: "constexpr & consteval",
+    37: "C++20 Concepts & Ranges"
   },
   questions: [
     // ---- Section 1
@@ -1230,6 +1237,332 @@ window.QUIZZES.cpp = {
       answerDisplay: "`std::scoped_lock`",
       explain: "`std::scoped_lock(m1, m2, ...)` acquires several mutexes atomically using a deadlock-avoidance algorithm, so two threads requesting them in opposite orders won't deadlock.",
       section: 30
+    },
+    // ---- Section 31
+    {
+      type: "mc",
+      level: "beginner",
+      q: "With multiple `catch` handlers, which one runs?",
+      code: "try { divide(10, 0); }\ncatch (const std::invalid_argument& e) { ... }   // A\ncatch (const std::exception& e)        { ... }   // B",
+      choices: [
+        "The FIRST handler (top to bottom) whose type matches — here A",
+        "The most recently written one",
+        "All matching handlers run in order",
+        "Always the std::exception handler"
+      ],
+      answer: 0,
+      explain: "Handlers are tried top to bottom and the first match wins — so put specific types first and `catch (const std::exception&)` last, or the generic handler swallows everything. Always catch by const reference (no copy, no slicing).",
+      section: 31
+    },
+    {
+      type: "mc",
+      level: "intermediate",
+      q: "An exception is thrown from `deep()`. What happens to `r1` and `r2` before the catch runs?",
+      code: "void deep()    { Resource r2(\"inner\"); throw std::runtime_error(\"boom\"); }\nvoid shallow() { Resource r1(\"outer\"); deep(); }\n\ntry { shallow(); } catch (const std::runtime_error& e) { ... }",
+      choices: [
+        "Both destructors run (inner first, then outer) BEFORE the handler — stack unwinding",
+        "Neither destructor runs — the exception skips cleanup",
+        "Only r1's destructor runs",
+        "The destructors run after the catch block finishes"
+      ],
+      answer: 0,
+      explain: "Stack unwinding destroys every local object in every abandoned scope, innermost first, before the handler executes — verified: 'release inner' then 'release outer' print before 'caught'. This is why RAII (unique_ptr, lock_guard) is exception-safe for free, while a manual `delete` line just gets skipped.",
+      section: 31
+    },
+    {
+      type: "mc",
+      level: "advanced",
+      q: "A function declared `noexcept` throws anyway. What happens?",
+      code: "void risky() noexcept {\n    throw std::runtime_error(\"boom\");\n}\nrisky();",
+      choices: [
+        "`std::terminate()` — no unwinding to the caller; the program aborts (SIGABRT)",
+        "The exception propagates normally",
+        "The exception is silently swallowed",
+        "It fails to compile"
+      ],
+      answer: 0,
+      explain: "noexcept is a promise the runtime enforces the hard way: a throw escaping a noexcept function calls std::terminate(). Verified: GCC even warns '-Wterminate' at compile time, then the run aborts with exit code 134. This enforcement is why vector requires noexcept moves (section 10).",
+      section: 31
+    },
+    {
+      type: "mc",
+      level: "intermediate",
+      q: "Inside a catch block, what's the difference between `throw;` and `throw e;`?",
+      choices: [
+        "`throw;` re-raises the SAME exception object; `throw e;` copies it as the declared type — slicing a derived exception",
+        "They are identical",
+        "`throw;` is a syntax error outside main",
+        "`throw e;` is faster"
+      ],
+      answer: 0,
+      explain: "Bare `throw;` rethrows the original object unchanged (verified: outer handler sees the same message). `throw e;` constructs a COPY typed as the handler's declared type — if the real exception was a derived class, the copy is sliced down to the base (section 26's slicing applied to exceptions).",
+      section: 31
+    },
+    // ---- Section 32
+    {
+      type: "mc",
+      level: "beginner",
+      q: "What do these print?",
+      code: "int x = 10, y = 20;\nauto byValue = [=]() { return x + y; };\nauto byRef   = [&]() { return x + y; };\nx = 100;\nbyValue();   // ?\nbyRef();     // ?",
+      choices: [
+        "`30` and `120` — `[=]` copied x at creation; `[&]` sees the live x",
+        "`120` and `120` — both see the current values",
+        "`30` and `30` — both captured at creation",
+        "`120` and `30`"
+      ],
+      answer: 0,
+      explain: "`[=]` copies the used variables INTO the closure at creation time (x was 10), so later changes are invisible. `[&]` stores references, so the call sees x = 100. Verified: 30 and 120.",
+      section: 32
+    },
+    {
+      type: "mc",
+      level: "intermediate",
+      q: "Why does this fail to compile, and what fixes it?",
+      code: "int counter = 0;\nauto count = [counter]() { return ++counter; };",
+      choices: [
+        "By-value captures are const by default — add `mutable` to modify the closure's own copy",
+        "You can't capture ints by value",
+        "++ is not allowed in lambdas",
+        "counter must be captured by reference to compile"
+      ],
+      answer: 0,
+      explain: "Verified error: 'increment of read-only variable'. `[counter]() mutable { return ++counter; }` compiles — and modifies only the CLOSURE's copy: three calls return 1 2 3 while the outer counter stays 0 (verified).",
+      section: 32
+    },
+    {
+      type: "mc",
+      level: "advanced",
+      q: "How do you get a `std::unique_ptr` INTO a lambda, given `[=]` would need to copy it?",
+      choices: [
+        "Init-capture with a move: `[p = std::move(ptr)]() { return *p; }`",
+        "You can't — lambdas can't hold move-only types",
+        "Capture it by reference and hope it lives long enough",
+        "Call .release() and capture the raw pointer"
+      ],
+      answer: 0,
+      explain: "C++14 init-capture creates a NEW closure member from any expression — including a move. Verified: the lambda owns the int (returns 42) and the original ptr is null afterward. `[=]` fails because unique_ptr's copy constructor is deleted (section 20).",
+      section: 32
+    },
+    // ---- Section 33
+    {
+      type: "mc",
+      level: "beginner",
+      q: "What IS a `std::string_view`, and why use it for read-only string parameters?",
+      choices: [
+        "A non-owning {pointer, length} into existing characters — accepts literal/string/char* with zero copies",
+        "A faster std::string that owns its data",
+        "A null-terminated wrapper around char*",
+        "A reference-counted string"
+      ],
+      answer: 0,
+      explain: "string_view doesn't own or copy anything — it points into someone else's characters. A `const std::string&` parameter forces a temporary allocation when passed a literal; string_view wraps the existing chars directly (verified: same .data() pointer).",
+      section: 33
+    },
+    {
+      type: "mc",
+      level: "intermediate",
+      q: "What's the difference between these two substrings of a 1000-char string?",
+      code: "std::string      a = big.substr(0, 500);\nstd::string_view b = std::string_view(big).substr(0, 500);",
+      choices: [
+        "`a` copies 500 chars into new memory; `b` is a view into big's buffer (verified via .data())",
+        "Both copy",
+        "Both share memory with big",
+        "`b` is invalid — string_view has no substr"
+      ],
+      answer: 0,
+      explain: "`std::string::substr` allocates and copies (verified: a.data() != big.data()); `string_view::substr` just narrows the pointer+length (verified: b.data() == big.data()). Slicing a view is O(1) pointer math — the same copy-vs-view distinction as NumPy slices vs list slices.",
+      section: 33
+    },
+    {
+      type: "mc",
+      level: "advanced",
+      q: "What's wrong with this line?",
+      code: "std::string_view sv = std::string(\"temporary\");\nstd::cout << sv;",
+      choices: [
+        "The temporary string dies at the end of its line — sv is a dangling view, reading it is UB",
+        "Nothing; string_view extends the temporary's lifetime",
+        "It fails to compile",
+        "sv silently makes a copy"
+      ],
+      answer: 0,
+      explain: "A view must never outlive its owner, and binding to a temporary means the owner dies immediately (lifetime extension does NOT apply through string_view's pointer). Safe as a function parameter; dangerous as a member or return value. Also remember: .data() is not guaranteed null-terminated.",
+      section: 33
+    },
+    // ---- Section 34
+    {
+      type: "mc",
+      level: "beginner",
+      q: "What are the TWO problems with plain `enum` that `enum class` fixes?",
+      choices: [
+        "Name leakage into the enclosing scope, and implicit conversion to int",
+        "Slow comparisons and large storage",
+        "They can't be used in switch statements",
+        "They can't have explicit values"
+      ],
+      answer: 0,
+      explain: "Plain enum: `Red` becomes a global name and `int c = Red;` / `Red < 5` silently work (verified). enum class: members must be qualified (`Status::Idle`) and `int i = st;` is a verified compile error — conversions require static_cast.",
+      section: 34
+    },
+    {
+      type: "fill",
+      level: "intermediate",
+      q: "Which named cast converts an `enum class Status` value to `int` (and back)?",
+      accept: ["static_cast", "static_cast<int>", "std::static_cast"],
+      answerDisplay: "`static_cast`",
+      explain: "enum class has no implicit int conversion, so both directions are explicit: `static_cast<int>(st)` and `static_cast<Status>(2)` — both verified. That explicitness is the type-safety point.",
+      section: 34
+    },
+    {
+      type: "mc",
+      level: "intermediate",
+      q: "What does `: std::uint8_t` do here?",
+      code: "enum class Status : std::uint8_t { Idle, Running, Done };\nsizeof(Status);   // ?",
+      choices: [
+        "Sets the underlying storage type — sizeof(Status) is 1 instead of the default 4",
+        "Limits the enum to 8 members",
+        "Makes the members unsigned strings",
+        "Nothing; it's a comment"
+      ],
+      answer: 0,
+      explain: "The `: type` suffix picks the underlying integer type. Verified: sizeof(Status) == 1 vs sizeof of a default (int-backed) enum == 4. Useful for packed structs, network formats, and huge arrays of enums.",
+      section: 34
+    },
+    // ---- Section 35
+    {
+      type: "mc",
+      level: "beginner",
+      q: "Which cast is right for an intentional double→int conversion?",
+      code: "double pi = 3.99;\nint t = ____(pi);   // want 3",
+      choices: [
+        "`static_cast<int>` — related-type conversion, compile-time checked",
+        "`reinterpret_cast<int>`",
+        "`const_cast<int>`",
+        "`dynamic_cast<int>`"
+      ],
+      answer: 0,
+      explain: "static_cast handles sensible related-type conversions (numeric, up/down hierarchy, void*). Verified: static_cast<int>(3.99) == 3. reinterpret_cast re-labels bits, const_cast changes constness, dynamic_cast is for polymorphic downcasts only.",
+      section: 35
+    },
+    {
+      type: "mc",
+      level: "intermediate",
+      q: "Which is the ONLY cast that can remove const, and when is writing through it legal?",
+      choices: [
+        "`const_cast` — legal only if the underlying object was NOT declared const",
+        "`static_cast` — always legal",
+        "`reinterpret_cast` — legal for ints only",
+        "No cast can remove const"
+      ],
+      answer: 0,
+      explain: "Only const_cast changes const-ness. Verified: writing through `const_cast<int&>(cref)` works because the underlying `int real` isn't const. If the object itself was declared const, writing through the cast is undefined behavior (section 23's caveat).",
+      section: 35
+    },
+    {
+      type: "mc",
+      level: "advanced",
+      q: "Why is the C-style cast dangerous here, given the named cast refuses?",
+      code: "int x = 42;\ndouble* dp1 = (double*)&x;               // compiles!\ndouble* dp2 = static_cast<double*>(&x);  // error",
+      choices: [
+        "The C-style cast silently escalates down the cast ladder to reinterpret_cast, hiding a real error",
+        "The C-style cast is slower",
+        "The C-style cast rounds the value",
+        "static_cast is wrong; the C-style version is correct"
+      ],
+      answer: 0,
+      explain: "A C-style cast tries const_cast → static_cast → static_cast+const_cast → reinterpret_cast until something compiles. Verified: static_cast correctly errors ('invalid static_cast from int* to double*'), while (double*)&x silently becomes a reinterpret_cast — UB waiting to happen. Named casts also make casts greppable.",
+      section: 35
+    },
+    // ---- Section 36
+    {
+      type: "mc",
+      level: "beginner",
+      q: "When can a `constexpr` function run?",
+      code: "constexpr int factorial(int n) { return n <= 1 ? 1 : n * factorial(n - 1); }",
+      choices: [
+        "Both at compile time (constant args — e.g. array sizes, static_assert) AND as a normal runtime function",
+        "Only at compile time",
+        "Only at runtime",
+        "Only inside templates"
+      ],
+      answer: 0,
+      explain: "constexpr means CAN run at compile time, not must. Verified both worlds: `std::array<int, factorial(4)>` (24 elements, compile time) and `factorial(runtime_n)` returning 720 at runtime. `consteval` is the compile-time-ONLY variant.",
+      section: 36
+    },
+    {
+      type: "mc",
+      level: "intermediate",
+      q: "What happens when a `consteval` function gets a runtime argument?",
+      code: "consteval int square(int n) { return n * n; }\nint runtime_n = 7;\nsquare(runtime_n);",
+      choices: [
+        "Compile error — consteval functions MUST be evaluated at compile time",
+        "It runs at runtime like a normal function",
+        "It returns 0",
+        "Undefined behavior"
+      ],
+      answer: 0,
+      explain: "consteval = 'immediate function': every call must produce a compile-time constant. Verified error: 'the value of runtime_n is not usable in a constant expression'. `square(9)` is fine (81) because 9 is a constant.",
+      section: 36
+    },
+    {
+      type: "mc",
+      level: "advanced",
+      q: "How does `if constexpr` differ from a plain `if` inside a template?",
+      code: "template <typename T>\nstd::string describe(T) {\n    if constexpr (std::is_integral_v<T>) return \"integral\";\n    else return \"something else\";\n}",
+      choices: [
+        "The untaken branch is DISCARDED at compile time — it may even contain code invalid for that T",
+        "It's just a style preference; both compile identically",
+        "if constexpr runs faster at runtime but both branches compile",
+        "It only works with integers"
+      ],
+      answer: 0,
+      explain: "With plain `if`, BOTH branches must compile for every T. `if constexpr` selects the branch during compilation and throws the other away — enabling per-type code paths without template specialization. Verified: describe(42)/describe(3.14)/describe(\"hi\") → integral/floating/something else.",
+      section: 36
+    },
+    // ---- Section 37
+    {
+      type: "mc",
+      level: "intermediate",
+      q: "What do C++20 concepts improve about this failing call?",
+      code: "template <typename T> concept Numeric = std::integral<T> || std::floating_point<T>;\nNumeric auto add(Numeric auto a, Numeric auto b) { return a + b; }\n\nadd(std::string(\"a\"), std::string(\"b\"));   // fails",
+      choices: [
+        "The error happens AT THE CALL SITE and names the violated constraint (Numeric) — not pages of template spew",
+        "The call compiles and returns \"ab\"",
+        "Concepts make the call fail at runtime instead",
+        "Nothing; the error is identical to unconstrained templates"
+      ],
+      answer: 0,
+      explain: "Verified error: 'no matching function... requires Numeric<...>' — the constraint is named right where you called it. Unconstrained templates fail deep inside the implementation with notoriously unreadable errors. Concepts are compile-time duck typing, like a checkable typing.Protocol.",
+      section: 37
+    },
+    {
+      type: "mc",
+      level: "intermediate",
+      q: "What does this ranges pipeline print for nums = {1..10}?",
+      code: "auto result = nums\n    | std::views::filter([](int n){ return n % 2 == 0; })\n    | std::views::transform([](int n){ return n * n; })\n    | std::views::take(3);\nfor (int n : result) std::cout << n << \" \";",
+      choices: [
+        "`4 16 36` — evens (2,4,6), squared, first three",
+        "`1 4 9` — first three squared",
+        "`2 4 6` — first three evens",
+        "`4 16 36 64 100` — all evens squared"
+      ],
+      answer: 0,
+      explain: "The pipeline reads left to right: keep evens → square → take 3. Verified output: 4 16 36. Views compose with `|` like a shell pipeline, replacing nested iterator-pair calls.",
+      section: 37
+    },
+    {
+      type: "mc",
+      level: "advanced",
+      q: "A filter view was created, THEN the vector was mutated. What does iterating the view show?",
+      code: "auto evens = nums | std::views::filter(isEven);   // nums = {1..10}\nnums[1] = 999;                                    // the 2 becomes 999\nfor (int n : evens) ...",
+      choices: [
+        "`4 6 8 10` — views are LAZY and reference the container, so the mutated 2 is gone",
+        "`2 4 6 8 10` — the view snapshotted the data at creation",
+        "Undefined behavior — views can't outlive mutations",
+        "An exception is thrown"
+      ],
+      answer: 0,
+      explain: "Views don't copy — they re-read the underlying container at ITERATION time. Verified: after nums[1]=999, the former 2 fails the filter and the output is 4 6 8 10. Same lazy model as Python generators, same lifetime care as string_view. (That's also why infinite `views::iota(1) | take(5)` works — verified 1 2 3 4 5.)",
+      section: 37
     }
   ]
 };

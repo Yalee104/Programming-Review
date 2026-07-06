@@ -1372,6 +1372,545 @@ when to use which:
 
 ---
 
+## 19. collections Essentials — defaultdict, Counter, namedtuple, deque
+
+**`defaultdict` — a dict that manufactures missing values instead of raising.** Pass it a factory (`list`, `int`, `set`, any zero-arg callable); the first access to a missing key calls the factory and stores the result.
+
+```python
+words = ["apple", "banana", "avocado", "blueberry", "cherry"]
+
+plain = {}
+plain["a"].append("apple")
+```
+❌ ERROR — a normal dict has nothing under `"a"` yet:
+```python
+# KeyError: 'a'
+```
+✅ OK — `defaultdict(list)` creates the empty list on first touch, so grouping becomes one line per item:
+```python
+from collections import defaultdict
+by_letter = defaultdict(list)
+for w in words:
+    by_letter[w[0]].append(w)     # no "if key not in dict" dance needed
+
+dict(by_letter)   # {'a': ['apple', 'avocado'], 'b': ['banana', 'blueberry'], 'c': ['cherry']} -- verified
+```
+`defaultdict(int)` makes a counter (missing keys start at 0):
+```python
+dd = defaultdict(int)
+dd["x"] += 1; dd["x"] += 1; dd["y"] += 1
+dict(dd)   # {'x': 2, 'y': 1} -- verified
+```
+
+**`Counter` — counting, ranking and multiset arithmetic in one type:**
+```python
+from collections import Counter
+c = Counter("mississippi")
+c                     # Counter({'i': 4, 's': 4, 'p': 2, 'm': 1}) -- verified, sorted by count
+c.most_common(2)      # [('i', 4), ('s', 4)]  -- verified
+c["s"]                # 4
+c["z"]                # 0  -- missing keys count as 0, NO KeyError -- verified
+
+c + Counter(["a", "b", "a"])           # counts merge: adds 'a': 2, 'b': 1 -- verified
+Counter(a=3, b=1) - Counter(a=1, b=2)  # Counter({'a': 2}) -- verified: negative/zero counts dropped
+```
+
+**`namedtuple` — a tuple with field names (a lightweight immutable record):**
+```python
+from collections import namedtuple
+Point = namedtuple("Point", ["x", "y"])
+p = Point(3, 4)
+p             # Point(x=3, y=4)  -- readable repr for free -- verified
+p.x, p[1]     # 3 4 -- access by NAME or by index, it's still a tuple
+x, y = p      # unpacks like any tuple -- verified
+p._asdict()   # {'x': 3, 'y': 4} -- verified
+```
+❌ Immutable, like every tuple:
+```python
+p.x = 99
+# AttributeError: can't set attribute
+```
+✅ For mutable records with types, prefer `@dataclass` (section 14); `namedtuple` wins when you want tuple-compatibility and immutability.
+
+**`deque` — O(1) append/pop at BOTH ends (a list is O(n) at the front):**
+```python
+from collections import deque
+d = deque([2, 3, 4])
+d.appendleft(1)          # O(1) — on a list this shifts every element
+d.append(5)
+d                        # deque([1, 2, 3, 4, 5]) -- verified
+d.popleft(), d.pop()     # 1 5 -- verified; d is now deque([2, 3, 4])
+```
+`maxlen` turns it into a ring buffer — perfect for "keep the last N things":
+```python
+ring = deque(maxlen=3)
+for i in range(1, 6):
+    ring.append(i)
+ring   # deque([3, 4, 5], maxlen=3) -- verified: 1 and 2 fell off the left automatically
+```
+
+Quick reference:
+```
+defaultdict(factory)   → missing key -> factory() stored & returned (verified: no KeyError)
+                         grouping: defaultdict(list); counting: defaultdict(int)
+Counter(iterable)      → counts; missing keys are 0 (verified); most_common(n);
+                         +/- multiset arithmetic (verified, negatives dropped)
+namedtuple             → immutable record; access by name AND index; unpacks like a tuple
+                         (verified) — reach for @dataclass when you need mutation/methods
+deque                  → O(1) at both ends (list front ops are O(n));
+                         maxlen=N = ring buffer, old items fall off (verified)
+```
+
+---
+
+## 20. Structural Pattern Matching — match/case (Python 3.10+)
+
+**What `match` does:** compares a value against a sequence of PATTERNS — not just constants like C++ `switch`, but SHAPES: "a 2-element list", "a dict with a name key", "a Point with x=0". First matching case wins, no fallthrough, and patterns can capture variables while matching.
+
+```python
+def describe(value):
+    match value:
+        case 0:                              # literal pattern
+            return "zero"
+        case int(n) if n < 0:                # capture + GUARD condition
+            return f"negative int {n}"
+        case int() | float() as n:           # OR-pattern, 'as' captures
+            return f"number {n}"
+        case [x, y]:                         # sequence pattern, exactly 2
+            return f"pair: {x} and {y}"
+        case [first, *rest]:                 # sequence with star, like unpacking
+            return f"list starting with {first}, {len(rest)} more"
+        case {"name": name, **extra}:        # mapping pattern: needs a "name" key
+            return f"dict with name={name}, extra keys={list(extra)}"
+        case str(s):                         # class pattern: "is it a str?"
+            return f"string {s!r}"
+        case _:                              # wildcard — the default
+            return "something else"
+```
+✅ Verified, one line per pattern kind:
+```python
+describe(0)                            # 'zero'
+describe(-5)                           # 'negative int -5'          -- guard fired
+describe(3.14)                         # 'number 3.14'
+describe([1, 2])                       # 'pair: 1 and 2'
+describe([7, 8, 9, 10])                # 'list starting with 7, 3 more'
+describe({"name": "Aaron", "age": 30}) # "dict with name=Aaron, extra keys=['age']"
+describe("hi")                         # "string 'hi'"
+describe(None)                         # 'something else'
+```
+
+**Class patterns destructure objects by attribute — great with dataclasses:**
+```python
+@dataclass
+class Point:
+    x: int
+    y: int
+
+def where(p):
+    match p:
+        case Point(x=0, y=0):  return "origin"
+        case Point(x=0, y=y):  return f"on y-axis at {y}"
+        case Point(x=x, y=0):  return f"on x-axis at {x}"
+        case Point(x=x, y=y):  return f"at ({x}, {y})"
+
+where(Point(0, 0))   # 'origin'         -- verified
+where(Point(0, 5))   # 'on y-axis at 5' -- verified
+where(Point(3, 4))   # 'at (3, 4)'      -- verified
+```
+
+⚠️ **Gotcha:** a bare lowercase name in a case is a CAPTURE (it always matches and binds), not a comparison. `case RED:` doesn't compare against a variable named RED — write `case Color.RED:` (dotted names ARE compared) or use a guard.
+
+Contrast with C++ `switch`: `match` needs no `break` (no fallthrough exists), works on any type (not just integers), and destructures while it matches.
+
+Quick reference:
+```
+case 0 / case "x"        → literal patterns, compared with ==
+case int(n) if n < 0     → class check + capture + guard (verified)
+case A() | B() as v      → OR alternatives; 'as' names the match
+case [a, b] / [a, *rest] → sequence patterns, star like unpacking (verified)
+case {"k": v, **rest}    → mapping pattern — requires the key, captures the value
+case Point(x=0, y=y)     → class pattern, destructures by attribute (verified)
+case _                   → wildcard default
+bare lowercase name      → CAPTURES (always matches!) — dotted/qualified names compare
+no fallthrough           → exactly one case runs; no break needed (vs C++ switch)
+```
+
+---
+
+## 21. enum — Named Constants Done Right
+
+**Why:** plain module-level constants (`RED = 1`) are just ints — nothing stops `RED == PriorityLow` comparisons or passing 7 where a color belongs. `Enum` members are real typed objects: iterable, printable, and NOT interchangeable with ints.
+
+```python
+from enum import Enum, IntEnum, Flag, auto, unique
+
+class Color(Enum):
+    RED = auto()      # auto() assigns 1, 2, 3... — no manual numbering
+    GREEN = auto()
+    BLUE = auto()
+```
+✅ Verified basics — name, value, lookups in both directions, iteration:
+```python
+Color.RED            # Color.RED     (readable repr)
+Color.RED.name       # 'RED'
+Color.RED.value      # 1
+Color["GREEN"]       # Color.GREEN   -- lookup by NAME
+Color(3)             # Color.BLUE    -- lookup by VALUE
+list(Color)          # [<Color.RED: 1>, <Color.GREEN: 2>, <Color.BLUE: 3>]
+```
+**Members are identity-comparable and NOT equal to their numeric values:**
+```python
+Color.RED == Color.RED   # True  -- and `is` works too (singletons) -- verified
+Color.RED == 1           # False -- an Enum is NOT its int value    -- verified
+```
+✅ That last line is the type-safety point: accidental int comparisons fail loudly (well — falsely) instead of succeeding by coincidence. Compare C++ `enum class` (cpp summary section 34), which achieves the same with a compile error.
+
+**`IntEnum` — opt IN to int behavior when you genuinely need it:**
+```python
+class Priority(IntEnum):
+    LOW = 1
+    MED = 2
+    HIGH = 3
+
+Priority.HIGH > 2      # True -- verified, compares with ints
+Priority.LOW + 10      # 11   -- verified, does arithmetic
+```
+
+**`Flag` — bitwise-combinable enums (permission masks):**
+```python
+class Perm(Flag):
+    READ = auto()      # 1
+    WRITE = auto()     # 2
+    EXEC = auto()      # 4
+
+rw = Perm.READ | Perm.WRITE
+rw                  # Perm.READ|WRITE -- verified
+Perm.READ in rw     # True  -- verified
+Perm.EXEC in rw     # False -- verified
+```
+
+**`@unique` — forbid aliased values:**
+```python
+@unique
+class Dup(Enum):
+    A = 1
+    B = 1      # without @unique, B would silently become an ALIAS of A
+```
+❌ ERROR — verified:
+```python
+# ValueError: duplicate values found in <enum 'Dup'>: B -> A
+```
+
+Quick reference:
+```
+class C(Enum) + auto()  → named singleton constants, values auto-numbered 1..n
+.name / .value          → 'RED' / 1 (verified)
+C["NAME"] / C(value)    → lookup by name / by value (verified)
+Enum member == int      → False (verified) — type safety; use IntEnum to opt into
+                          int comparisons/arithmetic (verified)
+Flag + | operator       → bitmask-style combinable members, tested with `in` (verified)
+@unique                 → duplicate values raise ValueError instead of silently aliasing
+```
+
+---
+
+## 22. pathlib & File I/O
+
+**`pathlib.Path` is the modern, object-oriented replacement for `os.path` string juggling** — paths are objects with methods, and `/` joins them.
+
+```python
+from pathlib import Path
+
+base = Path("/tmp/demo")
+p = base / "notes" / "todo.txt"      # the / operator builds paths — no os.path.join
+type(p).__name__                     # 'PosixPath' ('WindowsPath' on Windows) -- verified
+```
+
+**Create, write, read — whole-file operations are one-liners:**
+```python
+p.parent.mkdir(parents=True, exist_ok=True)   # mkdir -p
+p.write_text("line one\nline two\n")
+p.read_text().splitlines()           # ['line one', 'line two'] -- verified
+```
+
+**A path knows its own anatomy:**
+```python
+p.name        # 'todo.txt'   -- verified
+p.stem        # 'todo'
+p.suffix      # '.txt'
+p.parent.name # 'notes'
+p.exists()    # True -- verified
+p.stat().st_size   # 18 -- real byte size, verified
+```
+
+**Finding files — glob and rglob (recursive):**
+```python
+sorted(f.name for f in (base / "notes").glob("*.txt"))   # ['b.txt', 'todo.txt'] -- verified
+sorted(f.name for f in base.rglob("*.md"))               # ['c.md'] -- verified, searches subtree
+```
+
+**Line-by-line and append — `with open()` accepts Path objects directly:**
+```python
+with open(p, "a", encoding="utf-8") as f:    # "a" = append mode
+    f.write("line three\n")
+
+with open(p, encoding="utf-8") as f:         # default mode "r"
+    for line in f:                           # file objects are ITERATORS (section 6) — lazy,
+        print(line.rstrip())                 # one line at a time, works for huge files
+# line one / line two / line three  -- verified
+```
+✅ `with` guarantees the file closes even if the body raises — this is exactly the context-manager protocol from section 9. ⚠️ Always pass `encoding="utf-8"` explicitly: the default is platform-dependent.
+
+Quick reference:
+```
+Path(a) / "b" / "c.txt"   → path joining with / (no os.path.join strings)
+write_text / read_text    → whole-file one-liners (verified)
+mkdir(parents=True, exist_ok=True) → mkdir -p equivalent
+.name/.stem/.suffix/.parent → path anatomy (verified 'todo.txt'/'todo'/'.txt')
+.exists()/.stat()         → checks and metadata (verified)
+glob("*.txt") / rglob     → shell-style matching; rglob recurses (verified)
+open(path_obj)            → open() accepts Path directly; file objects iterate lazily
+with open(...) as f       → guaranteed close via context manager (section 9)
+encoding="utf-8"          → pass it explicitly; the default varies by platform
+```
+
+---
+
+## 23. properties, classmethod & staticmethod
+
+**`@property` — a method that LOOKS like an attribute.** Callers write `t.celsius`, no parentheses — but a function runs, so you can compute values on the fly and validate assignments, without ever changing the public interface.
+
+```python
+class Temperature:
+    def __init__(self, celsius):
+        self._celsius = celsius        # _prefix: "internal storage" by convention
+
+    @property
+    def celsius(self):                 # the GETTER — runs on t.celsius
+        return self._celsius
+
+    @celsius.setter
+    def celsius(self, value):          # the SETTER — runs on t.celsius = x
+        if value < -273.15:
+            raise ValueError(f"below absolute zero: {value}")
+        self._celsius = value
+
+    @property
+    def fahrenheit(self):              # computed property — no setter = READ-ONLY
+        return self._celsius * 9 / 5 + 32
+```
+✅ Verified — attribute syntax, live computation, validation:
+```python
+t = Temperature(25)
+t.celsius        # 25
+t.fahrenheit     # 77.0  -- computed on access, always in sync
+t.celsius = 100  # goes through the setter
+t.fahrenheit     # 212.0 -- verified
+```
+❌ The setter validates; the computed property rejects writes entirely:
+```python
+t.celsius = -300
+# ValueError: below absolute zero: -300
+t.fahrenheit = 42
+# AttributeError: property 'fahrenheit' of 'Temperature' object has no setter
+```
+✅ The Python idiom: start with a plain attribute; if you later need validation/computation, upgrade it to a property — callers don't change at all (in C++/Java you'd have had to write getters up front).
+
+**`@classmethod` — receives the CLASS (`cls`), not an instance. The classic use: alternative constructors.**
+```python
+class Pizza:
+    def __init__(self, toppings):
+        self.toppings = toppings
+
+    @classmethod
+    def margherita(cls):               # named constructor
+        return cls(["tomato", "mozzarella"])
+
+    @classmethod
+    def from_csv(cls, s):              # constructor from a different format
+        return cls(s.split(","))
+
+    @staticmethod
+    def is_valid_topping(name):        # no self, no cls — just lives in the namespace
+        return name not in ("pineapple",)
+```
+✅ Verified:
+```python
+Pizza.margherita().toppings        # ['tomato', 'mozzarella']
+Pizza.from_csv("ham,mushroom").toppings   # ['ham', 'mushroom']
+Pizza.is_valid_topping("ham")      # True
+Pizza.is_valid_topping("pineapple")# False
+```
+**Why `cls` beats hardcoding the class name — inheritance does the right thing:**
+```python
+class Base:
+    @classmethod
+    def create(cls):
+        return cls()          # cls is whoever the call came through
+class Derived(Base): pass
+
+type(Base.create()).__name__      # 'Base'    -- verified
+type(Derived.create()).__name__   # 'Derived' -- verified: NOT Base!
+```
+
+Quick reference:
+```
+@property            → getter runs on plain attribute ACCESS (no parens) (verified)
+@name.setter         → validation/side effects on assignment (verified ValueError)
+property w/o setter  → read-only computed attribute (verified AttributeError on write)
+@classmethod (cls)   → gets the class; alternative constructors; respects subclasses
+                       (verified: Derived.create() builds a Derived)
+@staticmethod        → no self/cls at all — a plain function namespaced in the class
+which to use         → needs instance state: normal method | needs the class: classmethod
+                       | needs neither: staticmethod (or a module-level function)
+```
+
+---
+
+## 24. itertools Essentials — Lazy Iterator Building Blocks
+
+Everything in `itertools` returns a LAZY iterator (the generator model from section 6) — nothing is computed until you iterate, and infinite sequences are fine as long as you slice them.
+
+**Infinite generators — `count`, `cycle`, `repeat` (+ `islice` to take safely):**
+```python
+import itertools as it
+
+list(it.islice(it.count(10, 5), 4))   # [10, 15, 20, 25] -- verified: start 10, step 5, take 4
+list(it.repeat("ab", 3))              # ['ab', 'ab', 'ab'] -- verified
+
+cycler = it.cycle("AB")               # A, B, A, B, ... forever
+[next(cycler) for _ in range(5)]      # ['A', 'B', 'A', 'B', 'A'] -- verified
+```
+⚠️ `list(it.count())` hangs forever — always bound infinite iterators with `islice`/`take`-style limits. (Same lazy-infinite idea as C++20 `views::iota | take`, cpp summary section 37.)
+
+**`chain` — concatenate any iterables without building a combined list:**
+```python
+list(it.chain([1, 2], "ab", (3,)))    # [1, 2, 'a', 'b', 3] -- verified
+```
+
+**The combinatorics trio:**
+```python
+list(it.product("AB", [1, 2]))     # [('A',1), ('A',2), ('B',1), ('B',2)]  -- cartesian, verified
+list(it.permutations("ABC", 2))    # AB AC BA BC CA CB — ORDER MATTERS     -- verified
+list(it.combinations("ABCD", 2))   # AB AC AD BC BD CD — order ignored     -- verified
+```
+
+**`groupby` — and its famous trap: it only groups CONSECUTIVE equal keys.**
+```python
+data = [("fruit", "apple"), ("veg", "carrot"), ("fruit", "banana")]
+
+# ❌ unsorted input — the two 'fruit' runs become SEPARATE groups, and building a
+# dict silently keeps only the LAST one; 'apple' is LOST:
+{k: [v for _, v in g] for k, g in it.groupby(data, key=lambda t: t[0])}
+# {'fruit': ['banana'], 'veg': ['carrot']}            -- verified: apple is gone!
+
+# ✅ sort by the SAME key first:
+data_sorted = sorted(data, key=lambda t: t[0])
+{k: [v for _, v in g] for k, g in it.groupby(data_sorted, key=lambda t: t[0])}
+# {'fruit': ['apple', 'banana'], 'veg': ['carrot']}   -- verified, correct
+```
+(For plain "group into a dict" jobs, `defaultdict(list)` from section 19 is often the simpler tool.)
+
+**`zip_longest` — zip that doesn't stop at the shortest input:**
+```python
+list(it.zip_longest([1, 2, 3], "ab", fillvalue="-"))
+# [(1, 'a'), (2, 'b'), (3, '-')] -- verified (plain zip would drop the 3)
+```
+
+Quick reference:
+```
+count(start, step) / cycle / repeat → infinite (or n-times) lazy sources
+islice(it, n)                       → safe window into any iterator — REQUIRED for infinite ones
+chain(a, b, c)                      → concatenation without building a merged list (verified)
+product / permutations / combinations → cartesian / ordered / unordered selections (verified)
+groupby(data, key)                  → groups CONSECUTIVE equal keys ONLY — must sort by the
+                                      same key first (verified: unsorted input LOSES data)
+zip_longest(..., fillvalue=x)       → zip padded to the LONGEST input (verified)
+```
+
+---
+
+## 25. Generators Advanced — yield from, send, close & throw
+
+**`yield from` — delegate to a sub-generator (and collect its return value).** Section 6 covered basic `yield`; `yield from` flattens nested generators and is the only way to capture what a generator `return`s.
+
+```python
+def inner():
+    yield 1
+    yield 2
+    return "inner done"        # a generator CAN return a value — but it hides in StopIteration
+
+def outer():
+    result = yield from inner()    # yields 1, 2 through, THEN captures the return value
+    yield f"got: {result}"
+
+list(outer())   # [1, 2, 'got: inner done'] -- verified
+```
+The everyday use — flattening:
+```python
+def chain_gen(*iterables):
+    for iterable in iterables:
+        yield from iterable        # instead of: for x in iterable: yield x
+
+list(chain_gen("ab", [1, 2], range(2)))   # ['a', 'b', 1, 2, 0, 1] -- verified
+```
+
+**`send()` — talking BACK into a paused generator.** `value = yield something` is two-way: the generator hands out `something`, then receives whatever the caller `send()`s as the value of the `yield` expression.
+
+```python
+def running_average():
+    total, count = 0.0, 0
+    avg = None
+    while True:
+        value = yield avg      # pause: emit current avg, wait to RECEIVE a value
+        total += value
+        count += 1
+        avg = total / count
+
+g = running_average()
+next(g)          # None — PRIMING: run to the first yield before send() works -- verified
+g.send(10)       # 10.0 -- verified
+g.send(20)       # 15.0 -- verified
+g.send(60)       # 30.0 -- verified: (10+20+60)/3 — state lives across calls
+```
+❌ Forgetting to prime (`next(g)` first) raises `TypeError: can't send non-None value to a just-started generator`. This send-based coroutine style is the ancestor of `async`/`await` (section 18).
+
+**`close()` and `throw()` — controlling a generator from outside:**
+```python
+def worker():
+    try:
+        while True:
+            yield "working"
+    finally:
+        print("cleanup ran (close/GC)")   # guaranteed on close, like __exit__
+
+w = worker()
+next(w)      # 'working'
+w.close()    # prints: cleanup ran (close/GC) -- verified; generator is now finished
+```
+`throw()` raises an exception INSIDE the generator at the paused `yield`:
+```python
+g2 = running_average()
+next(g2)
+g2.throw(ValueError("injected"))
+# ValueError: injected -- verified: propagates out (the generator didn't catch it)
+```
+
+Quick reference:
+```
+yield from sub          → delegate: passes values through AND captures sub's return value
+                          (verified: return value only reachable via yield from)
+generator return value  → rides inside StopIteration — invisible to for loops
+yield from (flattening) → replaces 'for x in it: yield x' (verified chain example)
+value = yield out       → two-way: emits out, receives the next send() (verified 10/15/30)
+priming                 → must next(g) once before the first send() (else TypeError)
+g.close()               → raises GeneratorExit inside; finally blocks run (verified)
+g.throw(exc)            → injects an exception at the paused yield (verified propagation)
+lineage                 → send-style coroutines are the ancestors of async/await (section 18)
+```
+
+---
+
 ## Quick Reference — Key Rules
 
 ```

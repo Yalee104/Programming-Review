@@ -1871,6 +1871,592 @@ std::async + future      → DOES return a value; future.get() blocks until read
 
 ---
 
+## 31. Exception Handling — try/catch, Stack Unwinding, RAII Safety & noexcept
+
+**The model:** `throw` hands an exception object up the call stack until a matching `catch` is found. On the way up, every local object in every abandoned scope has its destructor run — this is **stack unwinding**, and it's why RAII (sections 20, 30's `lock_guard`) makes C++ exception-safe with zero extra code: cleanup lives in destructors, and destructors ALWAYS run.
+
+**1. Basic try/catch — catch by `const&`, most-specific handler first**
+
+```cpp
+double divide(double a, double b) {
+    if (b == 0) throw std::invalid_argument("division by zero");
+    return a / b;
+}
+
+try {
+    divide(10, 0);
+} catch (const std::invalid_argument& e) {   // const& — no copy, no slicing
+    std::cout << "caught invalid_argument: " << e.what() << "\n";
+} catch (const std::exception& e) {          // fallback: any std exception
+    std::cout << "caught generic: " << e.what() << "\n";
+}
+```
+✅ Verified output — the FIRST matching handler wins:
+```
+caught invalid_argument: division by zero
+```
+⚠️ Order matters: handlers are tried top to bottom. Put `catch (const std::exception&)` LAST — if it came first, it would swallow everything and the specific handler would be dead code.
+
+**2. Custom exception hierarchies — catching a base catches every derived type**
+
+Same rule as section 13 of the Python summary and virtual dispatch here: a handler for a BASE class also catches all DERIVED exceptions.
+
+```cpp
+class AppError : public std::runtime_error {
+public:
+    AppError(const std::string& msg) : std::runtime_error("AppError: " + msg) {}
+};
+class ConfigError : public AppError {
+public:
+    ConfigError(const std::string& key)
+        : AppError("bad config key '" + key + "'"), key_(key) {}
+private:
+    std::string key_;
+};
+
+try {
+    throw ConfigError("timeout");
+} catch (const AppError& e) {        // base-class handler
+    std::cout << "caught as AppError: " << e.what() << "\n";
+}
+```
+✅ Verified: `caught as AppError: AppError: bad config key 'timeout'` — the ConfigError was caught by the AppError handler, and `what()` shows the full message built through the constructor chain.
+
+**3. Stack unwinding — destructors run BEFORE the catch. This is why RAII works.**
+
+```cpp
+struct Resource {
+    std::string name;
+    Resource(std::string n) : name(std::move(n)) { std::cout << "  acquire " << name << "\n"; }
+    ~Resource() { std::cout << "  release " << name << "\n"; }
+};
+
+void deep() {
+    Resource r2("inner");
+    throw std::runtime_error("thrown from deep()");
+}
+void shallow() {
+    Resource r1("outer");
+    deep();
+    std::cout << "never printed\n";   // skipped — the exception flew past
+}
+
+try { shallow(); }
+catch (const std::runtime_error& e) { std::cout << "caught: " << e.what() << "\n"; }
+```
+✅ Verified output — both destructors fire, inner-to-outer, BEFORE the handler runs:
+```
+  acquire outer
+  acquire inner
+  release inner
+  release outer
+caught: thrown from deep()
+```
+This is exactly why a raw `new`/`delete` pair is exception-UNSAFE (the `delete` line gets skipped, memory leaks) while `unique_ptr`/`lock_guard` members are safe automatically — their cleanup is in a destructor, and unwinding guarantees destructors run.
+
+**4. Rethrowing — bare `throw;` re-raises the SAME exception object**
+
+```cpp
+try {
+    try {
+        throw std::runtime_error("original error");
+    } catch (const std::exception& e) {
+        std::cout << "inner logs then rethrows: " << e.what() << "\n";
+        throw;                        // NOT 'throw e;' — that would COPY (and slice!)
+    }
+} catch (const std::exception& e) {
+    std::cout << "outer caught same object: " << e.what() << "\n";
+}
+```
+✅ Verified: both lines print `original error`. ⚠️ `throw e;` instead of `throw;` copies `e` AS ITS DECLARED TYPE — if the real exception was a derived class, the copy is sliced down (section 26's slicing, applied to exceptions).
+
+**5. `noexcept` — a promise checked the hard way**
+
+`noexcept` on a function declares "this never throws". The compiler may optimize around it — and if the function throws anyway, there is no unwinding to the caller: `std::terminate()` kills the program.
+
+```cpp
+void risky() noexcept {
+    throw std::runtime_error("boom");   // violating the promise
+}
+risky();
+```
+❌ Verified — GCC even warns at compile time, then at runtime:
+```
+warning: 'throw' will always call 'terminate' [-Wterminate]
+terminate called after throwing an instance of 'std::runtime_error'
+  what():  boom
+Aborted   (exit code 134, SIGABRT)
+```
+`noexcept` is also an OPERATOR that queries whether an expression can throw (this is how vector decides move vs copy, section 10):
+```cpp
+noexcept(divide(1, 2));   // 0 (false) — divide may throw    -- verified
+noexcept(1 + 2);          // 1 (true)  — arithmetic can't    -- verified
+```
+
+Quick reference:
+```
+catch (const T& e)         → always catch by const reference (no copy, no slicing)
+handler order              → top to bottom, FIRST match wins — most specific first
+catch (const Base&)        → also catches every DERIVED exception type (verified)
+stack unwinding            → destructors of all abandoned scopes run BEFORE the catch
+                             (verified: release inner/outer printed before "caught")
+RAII + exceptions          → cleanup in destructors is exception-safe for free;
+                             manual delete/unlock lines get SKIPPED by a flying exception
+throw;  (bare)             → rethrow the SAME object; 'throw e;' copies and can slice
+noexcept function throws   → std::terminate(), program aborts (verified, exit 134)
+noexcept(expr)             → operator form: queries throwability (verified 0/1)
+```
+
+---
+
+## 32. Lambda Captures In Depth
+
+A lambda is a compiler-generated functor (section 28 proved each lambda is its own class). The **capture list** decides which outer variables that hidden class stores — and whether it stores copies or references.
+
+**1. `[=]` copies at CREATION time; `[&]` sees live values at CALL time**
+
+```cpp
+int x = 10, y = 20;
+auto byValue = [=]() { return x + y; };   // copies x=10, y=20 into the closure NOW
+auto byRef   = [&]() { return x + y; };   // stores references to the real x, y
+x = 100;                                  // change x AFTER creating both
+```
+✅ Verified — the copy is frozen, the reference is live:
+```cpp
+byValue();   // 30  — still sees the x=10 copied at creation
+byRef();     // 120 — sees the current x=100
+```
+
+**2. Explicit captures — mix copy and reference per variable**
+
+```cpp
+auto mixed = [x, &y]() { y += x; };   // x by copy (currently 100), y by reference
+mixed();
+y;   // 120 — really modified through the reference  -- verified
+```
+✅ Prefer explicit lists over blanket `[=]`/`[&]` in real code — they document exactly what the lambda touches.
+
+**3. `mutable` — by-value captures are const unless you say otherwise**
+
+```cpp
+int counter = 0;
+auto count = [counter]() { return ++counter; };   // no mutable
+```
+❌ ERROR — the closure's copy is read-only by default:
+```
+error: increment of read-only variable 'counter'
+```
+✅ `mutable` unlocks the closure's OWN copy — the outer variable is never touched:
+```cpp
+auto count = [counter]() mutable { return ++counter; };
+count(); count(); count();   // 1 2 3 — the closure's private copy advances -- verified
+counter;                     // 0 — outer variable untouched               -- verified
+```
+
+**4. Init-capture (C++14) — create a NEW closure member from any expression**
+
+```cpp
+auto init = [n = x * 2]() { return n; };   // n exists ONLY inside the lambda
+init();   // 200 (x was 100)  -- verified
+```
+The killer use: **moving** a move-only object into a lambda (impossible with plain `[=]`, which copies):
+```cpp
+auto ptr = std::make_unique<int>(42);
+auto owner = [p = std::move(ptr)]() { return *p; };   // lambda now OWNS the int
+owner();            // 42    -- verified
+ptr == nullptr;     // true  -- ownership transferred into the closure -- verified
+```
+
+**5. Capturing `this` — lambdas inside member functions**
+
+```cpp
+struct Button {
+    std::string label;
+    std::function<void()> onClick;
+    void setup() {
+        onClick = [this] { std::cout << "clicked: " << label << "\n"; };
+        //         ^^^^ captures the object pointer; label means this->label
+    }
+};
+
+Button b{"OK", {}};
+b.setup();
+b.onClick();   // clicked: OK  -- verified
+```
+⚠️ `[this]` captures the POINTER, not a copy of the object — if the Button dies before `onClick` runs, the lambda dangles. Capture `[*this]` (C++17) to copy the whole object when lifetime is uncertain.
+
+**6. The dangling-capture trap — never return a `[&]` lambda**
+
+```cpp
+auto makeBroken() {
+    int local = 7;
+    return [&]() { return local; };   // captures a reference to a DEAD variable
+}
+auto f = makeBroken();
+f();   // undefined behavior — local no longer exists
+```
+❌ Same bug family as returning a reference to a local. ✅ Fix: capture by value (`[local]` or `[=]`) so the closure owns its own copy — closures with value captures are self-contained and safe to store/return, which is exactly how the Python closure examples (its section 7) behave by default.
+
+Quick reference:
+```
+[=]                → copy ALL used outer variables at CREATION time (verified: frozen values)
+[&]                → reference them — calls see LIVE values (verified) but can dangle
+[x, &y]            → explicit per-variable choice — best practice, self-documenting
+mutable            → by-value captures are const by default (verified error);
+                     mutable lets the lambda modify its OWN copies (outer unaffected)
+[n = expr]         → init-capture: new closure member from any expression (C++14)
+[p = std::move(x)] → move a move-only object INTO the closure (verified ownership transfer)
+[this]             → capture object pointer; [*this] copies the object (C++17)
+returning [&]      → dangling references, UB — return value-capturing lambdas instead
+```
+
+---
+
+## 33. std::string_view — Non-Owning String Slices (C++17)
+
+**What it is:** a `string_view` is just `{pointer, length}` pointing into SOMEONE ELSE'S characters. No allocation, no copy, no ownership — the string equivalent of NumPy's array views (Python summary section 16).
+
+**1. One parameter type that accepts every string-like source — with zero copies**
+
+```cpp
+void describe(std::string_view sv) {
+    std::cout << "[" << sv << "] length=" << sv.size() << "\n";
+}
+
+describe("a string literal");        // [a string literal] length=16   -- verified
+std::string s = "a std::string";
+describe(s);                         // [a std::string] length=13      -- verified
+const char* c = "a C string";
+describe(c);                         // [a C string] length=10         -- verified
+```
+✅ With `const std::string&` parameters, passing a literal builds a whole temporary `std::string` (allocation + copy). `string_view` wraps the existing characters directly — that's why it's the modern default for read-only string parameters.
+
+**2. Slicing operations are O(1) pointer math, never copies**
+
+```cpp
+std::string_view sv = "hello world";
+std::string_view word = sv.substr(0, 5);   // "hello" — a narrower VIEW, no copy
+sv.remove_prefix(6);                       // sv now views "world" — just moved the pointer
+```
+✅ Verified. Proof that no characters are ever copied:
+```cpp
+std::string big(1000, 'x');
+std::string_view view = big;
+view.data() == big.data();   // true — same memory  -- verified
+
+std::string      sub_copy = big.substr(0, 500);                    // string::substr COPIES
+std::string_view sub_view = std::string_view(big).substr(0, 500);  // view::substr doesn't
+sub_copy.data() == big.data();   // false — 500 chars duplicated   -- verified
+sub_view.data() == big.data();   // true  — same buffer            -- verified
+```
+
+**3. The dangling-view trap — a view must never outlive its owner**
+
+```cpp
+std::string_view sv = std::string("temporary");   // string dies at end of THIS LINE
+std::cout << sv;                                  // ❌ UB — viewing freed memory
+```
+❌ Same lifetime rule as the dangling lambda capture (section 32) and pointer to a dead local. Rules of thumb:
+- ✅ `string_view` as a **function parameter** — always safe (the source outlives the call)
+- ⚠️ `string_view` as a **data member or return value** — only if you can PROVE the owner lives longer
+- ❌ never bind one to a temporary `std::string`
+
+⚠️ Also: a `string_view` is **not guaranteed null-terminated** — never pass `sv.data()` to a C API expecting a `\0`-ended string; construct a `std::string` first.
+
+Quick reference:
+```
+string_view            → {pointer, length} into someone else's chars — no copy, no ownership
+as a parameter type    → accepts literal / std::string / char* with ZERO copies (verified)
+substr / remove_prefix → O(1) pointer adjustments, memory always shared (verified .data() ==)
+vs string::substr      → std::string::substr allocates + copies (verified .data() !=)
+lifetime rule          → the view must die BEFORE the string it views; binding to a
+                         temporary = dangling view = UB
+.data() caveat         → NOT guaranteed null-terminated — don't hand it to C APIs
+```
+
+---
+
+## 34. enum class vs Plain enum
+
+**Two problems with plain (C-style) enums:** their names leak into the enclosing scope, and they implicitly convert to int — so unrelated enums compare and mix silently. `enum class` (C++11) fixes both.
+
+```cpp
+enum Color { Red, Green, Blue };                          // plain — Red is a GLOBAL name now
+enum class Status : std::uint8_t { Idle, Running, Done }; // scoped + explicit 1-byte storage
+```
+
+**1. Plain enum: implicit int conversion (convenient, but type-unsafe)**
+
+```cpp
+int c = Red;        // fine — silently becomes 0        -- verified
+Red < 5;            // true — compares with ints freely -- verified
+```
+
+**2. enum class: fully scoped, no silent conversions**
+
+```cpp
+Status st = Status::Running;   // MUST qualify with Status::
+int i = st;
+```
+❌ ERROR — verified:
+```
+error: cannot convert 'Status' to 'int' in initialization
+```
+✅ Conversions must be explicit, both directions:
+```cpp
+int i = static_cast<int>(st);              // 1                        -- verified
+Status back = static_cast<Status>(2);      // == Status::Done (true)   -- verified
+```
+
+**3. Explicit underlying type — control the storage size**
+
+```cpp
+sizeof(Color);    // 4 — plain enum defaults to int              -- verified
+sizeof(Status);   // 1 — ': std::uint8_t' shrank it to one byte  -- verified
+```
+
+**4. Works naturally in switch (compilers warn on missing enumerators)**
+
+```cpp
+switch (st) {
+    case Status::Idle:    std::cout << "idle\n";    break;
+    case Status::Running: std::cout << "running\n"; break;   // <- prints "running" -- verified
+    case Status::Done:    std::cout << "done\n";    break;
+}
+```
+
+Quick reference:
+```
+enum Color {...}          → names leak into enclosing scope; implicit int conversion (verified)
+enum class Status {...}   → names scoped (Status::Idle); NO implicit conversion
+                            (verified compile error) — static_cast required both ways
+enum class S : uint8_t    → explicit underlying type; sizeof verified 1 vs default 4
+default choice            → enum class, always — plain enum only for legacy interop
+```
+
+---
+
+## 35. The Four C++ Casts (and why C-style casts are dangerous)
+
+C++ splits C's one-size-fits-all `(type)value` cast into four named casts, each doing ONE kind of conversion — so intent is explicit and the compiler can reject nonsense. (`dynamic_cast` was covered in depth in section 26.8; recapped in the table.)
+
+**1. `static_cast` — related-type conversions, checked at compile time**
+
+```cpp
+double pi = 3.99;
+int truncated = static_cast<int>(pi);   // 3 — explicit, intentional truncation -- verified
+```
+
+**2. `const_cast` — the ONLY cast that can add/remove const**
+
+```cpp
+int real = 42;                    // the underlying object is NOT const
+const int& cref = real;           // just a const VIEW of it
+const_cast<int&>(cref) = 99;      // legal: strips const from the VIEW
+real;                             // 99 -- verified
+```
+⚠️ Legal ONLY because `real` itself isn't const. Writing through `const_cast` to an object that was DECLARED const is undefined behavior (same caveat as section 23's `const_cast` note).
+
+**3. `reinterpret_cast` — reinterpret the bits, no conversion at all**
+
+```cpp
+std::uint32_t v = 0x44434241;                 // bytes 'A' 'B' 'C' 'D' (little-endian)
+char* bytes = reinterpret_cast<char*>(&v);
+bytes[0], bytes[1], bytes[2], bytes[3];       // A B C D -- verified: raw byte access
+
+std::uintptr_t addr = reinterpret_cast<std::uintptr_t>(&v);   // pointer -> integer
+reinterpret_cast<std::uint32_t*>(addr) == &v;                 // true — round-trips -- verified
+```
+Lowest-level, most dangerous — for byte-level inspection and pointer/integer round-trips. Almost always wrong in application code.
+
+**4. Why C-style casts are dangerous — they silently pick the strongest cast that works**
+
+```cpp
+int x = 42;
+double* dp1 = (double*)&x;               // C-style: COMPILES — silently a reinterpret_cast!
+double* dp2 = static_cast<double*>(&x);  // named cast: refuses
+```
+❌ Verified — the named cast catches the mistake the C-style cast hid:
+```
+error: invalid 'static_cast' from type 'int*' to type 'double*'
+```
+A C-style cast tries `const_cast` → `static_cast` → `static_cast+const_cast` → `reinterpret_cast` until something compiles — so a typo that SHOULD be an error becomes silent undefined behavior. Named casts also make casts greppable in a codebase.
+
+Quick reference:
+```
+static_cast<T>(x)       → related-type conversions (numeric, up/down class hierarchy,
+                          void*) — compile-time checked, no runtime cost
+const_cast<T&>(x)       → ONLY cast that changes const-ness; writing is legal only if
+                          the underlying object isn't really const (verified)
+reinterpret_cast<T*>(x) → re-label the bits: byte views, pointer<->integer (verified
+                          round-trip) — no checking whatsoever, last resort
+dynamic_cast<T*>(x)     → runtime-checked downcast via RTTI — nullptr / bad_cast on
+                          failure, needs a polymorphic source (see section 26.8)
+C-style (T)x            → silently tries the whole cast ladder incl. reinterpret_cast —
+                          compiles things that should be errors (verified) — avoid
+```
+
+---
+
+## 36. constexpr & consteval — Compile-Time Computation
+
+**The idea:** `constexpr` marks a function as RUNNABLE at compile time — the compiler executes it while compiling when the arguments are constants, folding the answer straight into the binary. The same function still works normally at runtime.
+
+**1. One function, two worlds**
+
+```cpp
+constexpr int factorial(int n) { return n <= 1 ? 1 : n * factorial(n - 1); }
+
+// compile time — result is baked into the binary:
+constexpr int f5 = factorial(5);
+static_assert(f5 == 120);                 // checked DURING COMPILATION — verified compiles
+std::array<int, factorial(4)> arr{};      // array sizes must be compile-time: 24 elements
+
+// runtime — same function, value not known until execution:
+int runtime_n = 6;
+factorial(runtime_n);                     // 720 — ordinary call -- verified
+```
+✅ Verified output: `factorial(5)=120 arr.size()=24` then `factorial(runtime 6)=720`.
+
+**2. `consteval` (C++20) — compile time ONLY, no runtime fallback**
+
+```cpp
+consteval int square(int n) { return n * n; }
+
+square(9);            // 81 — 9 is a constant, evaluated at compile time -- verified
+int runtime_n = 7;
+square(runtime_n);    // runtime value not allowed
+```
+❌ ERROR — verified:
+```
+error: the value of 'runtime_n' is not usable in a constant expression
+```
+`consteval` = "immediate function": guaranteed zero runtime cost, guaranteed compile-time answer.
+
+**3. `constexpr` vs `const` variables**
+
+```cpp
+const int a = std::rand() % 10;   // ✅ const CAN be initialized at runtime — just read-only after
+constexpr int b = std::rand();    // ❌ ERROR — constexpr REQUIRES a compile-time value
+constexpr int c = factorial(5);   // ✅ fine — value computable during compilation
+```
+`const` = "I won't change after init". `constexpr` = "my value exists at compile time".
+
+**4. `if constexpr` — compile-time branching inside templates**
+
+```cpp
+template <typename T>
+std::string describe(T) {
+    if constexpr (std::is_integral_v<T>)            return "integral";
+    else if constexpr (std::is_floating_point_v<T>) return "floating";
+    else                                            return "something else";
+}
+
+describe(42);     // "integral"        -- verified
+describe(3.14);   // "floating"        -- verified
+describe("hi");   // "something else"  -- verified
+```
+Unlike a normal `if`, the untaken branches are DISCARDED at compile time — they may even contain code that wouldn't compile for that `T`. This is the modern replacement for a lot of template specialization boilerplate.
+
+Quick reference:
+```
+constexpr function   → CAN run at compile time (constant args) AND at runtime (verified both)
+constexpr variable   → value must exist at compile time; const alone can be runtime-initialized
+consteval function   → compile time ONLY — runtime argument is a compile error (verified)
+static_assert(expr)  → assertion checked during compilation — free, can't ship broken
+if constexpr         → branch chosen at compile time; untaken branches discarded (verified)
+why bother           → zero runtime cost, errors at build time, array sizes/template
+                       args from real computed values (verified arr.size()=24)
+```
+
+---
+
+## 37. C++20 Concepts & Ranges — Constrained Templates and Lazy Pipelines
+
+**Concepts: named, checkable requirements on template parameters.** Section 13's templates accept ANY type and fail with pages of cryptic errors deep inside the implementation. A `concept` moves the check to the call site with a readable message.
+
+**1. Defining and using a concept**
+
+```cpp
+template <typename T>
+concept Numeric = std::integral<T> || std::floating_point<T>;
+
+// abbreviated syntax — 'Numeric auto' constrains parameter and return types:
+Numeric auto add(Numeric auto a, Numeric auto b) { return a + b; }
+
+add(2, 3);        // 5     -- verified
+add(1.5, 2.25);   // 3.75  -- verified
+add(std::string("a"), std::string("b"));
+```
+❌ ERROR — verified, and note HOW GOOD the message is compared to classic template spew:
+```
+error: no matching function for call to 'add(std::string, std::string)'
+note: candidate: ... requires (Numeric<auto:16>) && (Numeric<auto:17>) ...
+note: template argument deduction/substitution failed:
+```
+The failure names the CONSTRAINT (`Numeric`) at the CALL SITE — not a mystery error 40 frames inside the implementation.
+
+**2. `requires` expressions — describe a required SHAPE (structural, like Python's Protocol)**
+
+```cpp
+template <typename T>
+concept Sized = requires(T t) {
+    { t.size() } -> std::convertible_to<std::size_t>;   // "t.size() must exist and return size-like"
+};
+
+template <Sized T>
+void printSize(const T& t) { std::cout << "size=" << t.size() << "\n"; }
+
+printSize(std::vector<int>{1, 2, 3});   // size=3  -- verified
+printSize(std::string("hello"));        // size=5  -- verified
+```
+Any type with a matching `.size()` satisfies `Sized` — no inheritance, no registration. This is duck typing made compile-time-checkable (compare `typing.Protocol`, Python summary section 12).
+
+**3. Ranges: composable, LAZY pipelines over containers**
+
+```cpp
+std::vector<int> nums{1,2,3,4,5,6,7,8,9,10};
+
+auto result = nums
+    | std::views::filter([](int n) { return n % 2 == 0; })    // keep evens
+    | std::views::transform([](int n) { return n * n; })      // square them
+    | std::views::take(3);                                    // first 3 only
+
+for (int n : result) std::cout << n << " ";   // 4 16 36  -- verified
+```
+Reads left-to-right like a shell pipeline — compare the nested-call soup of pre-ranges STL (`transform(filter(...))` with iterator pairs everywhere).
+
+**4. Lazy means: work happens at ITERATION, not construction**
+
+```cpp
+// an INFINITE sequence — fine, because nothing runs until iteration:
+for (int n : std::views::iota(1) | std::views::take(5))
+    std::cout << n << " ";                    // 1 2 3 4 5  -- verified, no infinite loop
+
+// views reference the container, they don't copy it:
+auto evens = nums | std::views::filter([](int n) { return n % 2 == 0; });
+nums[1] = 999;                                // mutate AFTER creating the view
+for (int n : evens) std::cout << n << " ";    // 4 6 8 10 -- verified: the 2 is GONE,
+                                              // because the view re-reads nums lazily
+```
+✅ Same lazy model as Python generator expressions (Python summary section 5), and the same caveat as NumPy views (its section 16): a view sees — and depends on — the live underlying data.
+
+Quick reference:
+```
+concept Name = ...;          → a named, reusable compile-time predicate on types
+Numeric auto / template      → constrained templates — bad calls fail AT THE CALL SITE
+  <Numeric T>                  with the concept named in the error (verified)
+requires(T t) { {expr}->...; } → structural requirements ("has .size()") — compile-time
+                                 duck typing, Protocol-style (verified)
+views::filter/transform/take → composable pipeline stages, chained with |
+laziness                     → nothing computed until iteration — infinite sequences fine
+                               (verified iota|take), views see LIVE data (verified 999 test)
+views don't copy             → they reference the container — same lifetime care as
+                               string_view (section 33)
+```
+
+---
+
 ## Quick Reference — Key Rules
 
 ```
