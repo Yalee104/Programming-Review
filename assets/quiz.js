@@ -1,12 +1,17 @@
 // Quiz engine — reads ?lang=<id>, loads quizzes/<id>.js, runs the quiz.
 // Question types:
-//   mc   → { type:"mc", q, code?, choices:[...], answer:<index>, explain, section }
-//   fill → { type:"fill", q, code?, accept:[...], answerDisplay, explain, section }
+//   mc   → { type:"mc", q, code?, choices:[...], answer:<index>, explain, section, level }
+//   fill → { type:"fill", q, code?, accept:[...], answerDisplay, explain, section, level }
+// level: "beginner" | "intermediate" | "advanced"
 (function () {
   var params = new URLSearchParams(location.search);
   var langId = params.get("lang");
   var lang = window.getLanguage(langId);
   var root = document.getElementById("quiz-root");
+
+  var LEVELS = ["beginner", "intermediate", "advanced"];
+  var LEVEL_ICON = { beginner: "🟢", intermediate: "🟡", advanced: "🔴" };
+  function levelLabel(l) { return l.charAt(0).toUpperCase() + l.slice(1); }
 
   function esc(s) {
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -33,6 +38,10 @@
       .replace(/\s+/g, " ")
       .replace(/\.$/, "");
   }
+  function levelBadge(level) {
+    if (!level) return "";
+    return "<span class='level-badge " + level + "'>" + LEVEL_ICON[level] + " " + levelLabel(level) + "</span>";
+  }
 
   if (!lang || !lang.quiz) {
     root.innerHTML = "<div class='q-card'><p>No quiz available for this language yet. " +
@@ -56,7 +65,9 @@
   };
   document.head.appendChild(script);
 
-  var quiz, order, current, score, missed, chosenCount;
+  var quiz, order, current, score, missed, levelStats;
+  var chosenCount = null;
+  var chosenLevel = "all";
 
   function start() {
     quiz = (window.QUIZZES || {})[lang.id];
@@ -67,44 +78,98 @@
     renderStart();
   }
 
-  // ---- Start screen: pick how many questions ----
+  function poolIndices(level) {
+    var idx = [];
+    quiz.questions.forEach(function (q, i) {
+      if (level === "all" || q.level === level) idx.push(i);
+    });
+    return idx;
+  }
+
+  // ---- Start screen: pick difficulty + how many questions ----
   function renderStart() {
-    var pool = quiz.questions.length;
-    var min = Math.min(10, pool);
-    if (chosenCount == null) chosenCount = pool;                 // default: whole pool
-    chosenCount = Math.max(min, Math.min(chosenCount, pool));    // clamp
+    var counts = { all: quiz.questions.length };
+    LEVELS.forEach(function (l) { counts[l] = poolIndices(l).length; });
+    if (!counts[chosenLevel]) chosenLevel = "all";   // guard: never land on an empty level
+
+    var chips =
+      "<div class='level-chips' id='level-chips'>" +
+      ["all"].concat(LEVELS).map(function (l) {
+        var label = l === "all" ? "All" : LEVEL_ICON[l] + " " + levelLabel(l);
+        var disabled = counts[l] === 0;
+        return "<button class='level-chip" + (l === chosenLevel ? " active" : "") +
+          (disabled ? " disabled" : "") + "' data-level='" + l + "'" +
+          (disabled ? " disabled" : "") + ">" + label +
+          "<span class='chip-count'>" + counts[l] + "</span></button>";
+      }).join("") +
+      "</div>";
 
     root.innerHTML =
       "<div class='q-card start-card'>" +
         "<span class='q-type'>" + esc(lang.name) + " Quiz</span>" +
-        "<p class='q-text'>How many questions?</p>" +
-        "<div class='slider-row'>" +
-          "<input type='range' id='count-slider' min='" + min + "' max='" + pool +
-            "' value='" + chosenCount + "' step='1' aria-label='Number of questions'>" +
-        "</div>" +
-        "<div class='slider-val'><span id='count-val'>" + chosenCount + "</span> of " + pool + " questions</div>" +
+        "<p class='q-text'>Difficulty</p>" +
+        chips +
+        "<p class='q-text' style='margin-top:18px'>How many questions?</p>" +
+        "<div id='count-area'></div>" +
         "<div class='quiz-actions'><button class='btn primary' id='start-btn'>Start quiz</button></div>" +
-        "<p class='start-note'>Questions are drawn at random from the pool of " + pool +
-          (min < pool ? ". Slide to pick between " + min + " and " + pool + "." : ".") + "</p>" +
+        "<p class='start-note' id='start-note'></p>" +
       "</div>";
 
-    var slider = document.getElementById("count-slider");
-    var valEl = document.getElementById("count-val");
-    slider.addEventListener("input", function () {
-      chosenCount = +slider.value;
-      valEl.textContent = slider.value;
+    var countArea = document.getElementById("count-area");
+    var note = document.getElementById("start-note");
+
+    function renderCountControl() {
+      var pool = counts[chosenLevel];
+      var min = Math.min(10, pool);
+      if (chosenCount == null) chosenCount = pool;
+      chosenCount = Math.max(min, Math.min(chosenCount, pool));
+
+      if (pool <= min) {
+        // pool too small for a meaningful slider — fixed count
+        chosenCount = pool;
+        countArea.innerHTML = "<div class='slider-val'><span id='count-val'>" + pool + "</span> question" +
+          (pool === 1 ? "" : "s") + " (whole pool)</div>";
+      } else {
+        countArea.innerHTML =
+          "<div class='slider-row'>" +
+            "<input type='range' id='count-slider' min='" + min + "' max='" + pool +
+              "' value='" + chosenCount + "' step='1' aria-label='Number of questions'>" +
+          "</div>" +
+          "<div class='slider-val'><span id='count-val'>" + chosenCount + "</span> of " + pool + " questions</div>";
+        var slider = document.getElementById("count-slider");
+        slider.addEventListener("input", function () {
+          chosenCount = +slider.value;
+          document.getElementById("count-val").textContent = slider.value;
+        });
+      }
+      note.textContent = "Questions are drawn at random from the " +
+        (chosenLevel === "all" ? "full pool" : levelLabel(chosenLevel).toLowerCase() + " pool") +
+        " of " + pool + ".";
+    }
+
+    document.getElementById("level-chips").addEventListener("click", function (e) {
+      var chip = e.target.closest(".level-chip");
+      if (!chip || chip.disabled) return;
+      chosenLevel = chip.getAttribute("data-level");
+      Array.prototype.forEach.call(
+        document.querySelectorAll(".level-chip"),
+        function (c) { c.classList.toggle("active", c === chip); }
+      );
+      renderCountControl();
     });
+
+    renderCountControl();
     document.getElementById("start-btn").addEventListener("click", function () {
-      restart(chosenCount);
+      restart(chosenCount, chosenLevel);
     });
   }
 
-  function restart(count) {
-    var all = shuffle(quiz.questions.map(function (_, i) { return i; }));
-    order = all.slice(0, count);
+  function restart(count, level) {
+    order = shuffle(poolIndices(level)).slice(0, count);
     current = 0;
     score = 0;
     missed = [];
+    levelStats = {};
     renderQuestion();
   }
 
@@ -124,7 +189,7 @@
       "<div class='progress-label'>Question " + (current + 1) + " of " + order.length +
       " · Score " + score + "</div>" +
       "<div class='q-card'>" +
-      "<span class='q-type'>" + typeLabel + "</span>" +
+      "<div class='badge-row'><span class='q-type'>" + typeLabel + "</span>" + levelBadge(q.level) + "</div>" +
       "<p class='q-text'>" + fmt(q.q) + "</p>" +
       (q.code ? "<pre><code>" + esc(q.code) + "</code></pre>" : "");
 
@@ -190,11 +255,19 @@
 
       var correctShown = q.type === "mc" ? q.choices[q.answer] : q.answerDisplay;
 
+      // per-level tally for the results breakdown
+      if (q.level) {
+        var st = levelStats[q.level] || (levelStats[q.level] = { right: 0, total: 0 });
+        st.total++;
+        if (isCorrect) st.right++;
+      }
+
       if (isCorrect) {
         score++;
       } else {
         missed.push({
           section: q.section,
+          level: q.level,
           type: q.type,
           question: q.q,
           code: q.code || null,
@@ -239,6 +312,16 @@
       "<div class='score-big'>" + score + " / " + order.length + "</div>" +
       "<p class='score-msg'>" + pct + "% — " + msg + "</p>";
 
+    // per-level breakdown (only levels that appeared in this run)
+    var parts = LEVELS.filter(function (l) { return levelStats[l]; }).map(function (l) {
+      var st = levelStats[l];
+      return "<span class='level-score " + l + "'>" + LEVEL_ICON[l] + " " +
+        levelLabel(l) + " " + st.right + "/" + st.total + "</span>";
+    });
+    if (parts.length > 1) {
+      html += "<div class='level-score-row'>" + parts.join("") + "</div>";
+    }
+
     if (missed.length) {
       // compact "sections to review" summary, grouped and ordered by section
       var bySection = {};
@@ -258,12 +341,13 @@
       // expandable per-question recap: tap to see the question, your answer vs correct
       html += "<h2 class='results-subhead'>Your incorrect answers <span class='subhead-hint'>(tap to expand)</span></h2>";
       html += "<div class='miss-details'>";
-      missed.forEach(function (m, i) {
+      missed.forEach(function (m) {
         html +=
           "<details class='miss-item'>" +
             "<summary><span class='miss-badge'>✕</span>" +
               "<span class='miss-sum-text'>" + fmt(m.question) + "</span></summary>" +
             "<div class='miss-body'>" +
+              (m.level ? "<div class='miss-level'>" + levelBadge(m.level) + "</div>" : "") +
               (m.code ? "<pre><code>" + esc(m.code) + "</code></pre>" : "") +
               "<div class='miss-line your'><span class='miss-lbl'>Your answer</span>" + fmt(m.yourAnswer) + "</div>" +
               "<div class='miss-line correct'><span class='miss-lbl'>Correct answer</span>" + fmt(m.correctAnswer) + "</div>" +

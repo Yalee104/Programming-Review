@@ -294,6 +294,77 @@ p.page-sub { color: var(--muted); margin: 0 4px 20px; font-size: 15px; }
 .missed-list .sec { font-weight: 700; }
 .missed-list a { color: var(--accent); text-decoration: none; font-weight: 600; }
 
+/* Difficulty level chips (start screen) */
+.level-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.level-chip {
+  flex: 1 1 calc(50% - 8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 11px 10px;
+  font-size: 14px;
+  font-weight: 600;
+  border-radius: 10px;
+  border: 1.5px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.level-chip.active { border-color: var(--accent); background: var(--accent-soft); }
+.level-chip.disabled { opacity: 0.4; cursor: default; }
+.level-chip .chip-count {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--inline-code-bg);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+
+/* Level badge on question cards & recap */
+.badge-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.badge-row .q-type { margin-bottom: 0; }
+.level-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 999px;
+}
+.level-badge.beginner { color: var(--good); background: var(--good-soft); }
+.level-badge.intermediate { color: #a16207; background: var(--warn-soft); }
+.level-badge.advanced { color: var(--bad); background: var(--bad-soft); }
+@media (prefers-color-scheme: dark) {
+  .level-badge.intermediate { color: #fbbf24; }
+}
+
+/* Per-level score breakdown on results */
+.level-score-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin: -8px 0 20px;
+}
+.level-score {
+  font-size: 13px;
+  font-weight: 700;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.miss-level { margin: 4px 0 8px; }
+
 /* Quiz start screen — question-count slider */
 .start-card .q-text { margin-bottom: 4px; }
 .slider-row { padding: 14px 2px 4px; }
