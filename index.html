@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Programming Review</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <h1 class="page-title">Programming Review</h1>
+    <p class="page-sub">Pick a language, then read the study summary or test yourself with a quiz.</p>
+    <div id="cards"></div>
+    <p class="footer-note">Summaries live in the repo as markdown — this site renders them directly.</p>
+  </div>
+
+  <script src="assets/languages.js"></script>
+  <script>
+    var cards = document.getElementById("cards");
+    window.LANGUAGES.forEach(function (lang) {
+      var card = document.createElement("div");
+      card.className = "card";
+
+      var h = document.createElement("h2");
+      h.textContent = lang.name;
+      var p = document.createElement("p");
+      p.className = "desc";
+      p.textContent = lang.desc;
+
+      var actions = document.createElement("div");
+      actions.className = "actions";
+
+      var review = document.createElement("a");
+      review.className = "btn";
+      review.href = "review.html?lang=" + lang.id;
+      review.textContent = "📖 Review";
+
+      var quiz = document.createElement("a");
+      quiz.className = "btn primary" + (lang.quiz ? "" : " disabled");
+      quiz.href = lang.quiz ? "quiz.html?lang=" + lang.id : "#";
+      quiz.textContent = lang.quiz ? "📝 Quiz" : "Quiz coming soon";
+
+      actions.appendChild(review);
+      actions.appendChild(quiz);
+      card.appendChild(h);
+      card.appendChild(p);
+      card.appendChild(actions);
+      cards.appendChild(card);
+    });
+  </script>
+</body>
+</html>

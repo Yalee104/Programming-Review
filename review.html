@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Review — Programming Review</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="topbar">
+    <a class="back" href="index.html">‹ Home</a>
+    <div class="title" id="bar-title">Review</div>
+    <a class="back" id="quiz-link" href="#" style="display:none">Quiz ›</a>
+  </div>
+
+  <div class="wrap">
+    <div class="toc-box" id="toc-box" style="display:none">
+      <label for="toc-select">Jump to section</label>
+      <select id="toc-select">
+        <option value="">— sections —</option>
+      </select>
+    </div>
+    <div class="md" id="content"><p>Loading…</p></div>
+  </div>
+
+  <script src="assets/languages.js"></script>
+  <script src="assets/md.js"></script>
+  <script>
+    var params = new URLSearchParams(location.search);
+    var lang = window.getLanguage(params.get("lang"));
+    var content = document.getElementById("content");
+
+    if (!lang) {
+      content.innerHTML = "<p>Unknown language. <a href='index.html'>Back to home</a>.</p>";
+    } else {
+      document.title = lang.name + " Review";
+      document.getElementById("bar-title").textContent = lang.name + " Review";
+      if (lang.quiz) {
+        var ql = document.getElementById("quiz-link");
+        ql.href = "quiz.html?lang=" + lang.id;
+        ql.style.display = "";
+      }
+
+      fetch(lang.md)
+        .then(function (res) {
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          return res.text();
+        })
+        .then(function (src) {
+          var r = window.renderMarkdown(src);
+          content.innerHTML = r.html;
+
+          if (r.toc.length) {
+            var box = document.getElementById("toc-box");
+            var sel = document.getElementById("toc-select");
+            r.toc.forEach(function (t) {
+              var opt = document.createElement("option");
+              opt.value = t.id;
+              opt.textContent = t.num + ". " + t.title;
+              sel.appendChild(opt);
+            });
+            sel.addEventListener("change", function () {
+              if (sel.value) {
+                document.getElementById(sel.value).scrollIntoView({ behavior: "smooth" });
+                history.replaceState(null, "", "#" + sel.value);
+              }
+            });
+            box.style.display = "";
+          }
+
+          // honor #sN deep links (e.g. arriving from a quiz "review this section" link)
+          if (location.hash) {
+            var target = document.getElementById(location.hash.slice(1));
+            if (target) setTimeout(function () { target.scrollIntoView(); }, 50);
+          }
+        })
+        .catch(function (err) {
+          content.innerHTML =
+            "<p>Could not load <code>" + lang.md + "</code> (" + err.message + "). " +
+            "If you opened this file directly from disk, serve it over HTTP instead " +
+            "(e.g. <code>python -m http.server</code>) or use the GitHub Pages URL.</p>";
+        });
+    }
+  </script>
+</body>
+</html>
