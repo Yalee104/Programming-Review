@@ -294,4 +294,93 @@ p.page-sub { color: var(--muted); margin: 0 4px 20px; font-size: 15px; }
 .missed-list .sec { font-weight: 700; }
 .missed-list a { color: var(--accent); text-decoration: none; font-weight: 600; }
 
+/* Quiz start screen — question-count slider */
+.start-card .q-text { margin-bottom: 4px; }
+.slider-row { padding: 14px 2px 4px; }
+input[type="range"] {
+  width: 100%;
+  height: 30px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  background: transparent;
+}
+.slider-val { text-align: center; font-size: 15px; color: var(--muted); margin-top: 2px; }
+.slider-val #count-val { font-size: 26px; font-weight: 800; color: var(--text); }
+.start-note { font-size: 13px; color: var(--muted); text-align: center; margin-top: 12px; }
+
+/* Results — expandable incorrect-answer recap */
+.results-subhead { font-size: 18px; margin: 26px 0 10px; }
+.subhead-hint { font-size: 13px; font-weight: 400; color: var(--muted); }
+
+.miss-item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 10px;
+  overflow: hidden;
+}
+.miss-item summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 13px 14px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  -webkit-tap-highlight-color: transparent;
+}
+.miss-item summary::-webkit-details-marker { display: none; }
+.miss-item summary::after {
+  content: "▸";
+  margin-left: auto;
+  color: var(--muted);
+  transition: transform 0.2s;
+  flex-shrink: 0;
+}
+.miss-item[open] summary::after { transform: rotate(90deg); }
+.miss-item summary code {
+  background: var(--inline-code-bg);
+  padding: 1px 5px;
+  border-radius: 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.88em;
+}
+.miss-badge { color: var(--bad); font-weight: 800; flex-shrink: 0; }
+.miss-sum-text { overflow-wrap: break-word; min-width: 0; }
+
+.miss-body { padding: 2px 14px 14px; font-size: 15px; }
+.miss-body pre {
+  background: var(--code-bg);
+  color: var(--code-text);
+  padding: 12px 14px;
+  border-radius: 10px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 4px 0 12px;
+  -webkit-overflow-scrolling: touch;
+}
+.miss-body pre code { background: none; padding: 0; color: inherit; }
+.miss-body code {
+  background: var(--inline-code-bg);
+  padding: 1px 5px;
+  border-radius: 5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
+}
+.miss-line { margin: 8px 0; padding: 10px 12px; border-radius: 8px; overflow-wrap: break-word; }
+.miss-line.your { border: 1.5px solid var(--bad); background: var(--bad-soft); }
+.miss-line.correct { border: 1.5px solid var(--good); background: var(--good-soft); }
+.miss-lbl {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+.miss-explain { margin: 12px 0 8px; color: var(--text); }
+
 .footer-note { margin-top: 30px; text-align: center; font-size: 13px; color: var(--muted); }

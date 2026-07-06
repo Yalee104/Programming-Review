@@ -9,7 +9,7 @@
   var root = document.getElementById("quiz-root");
 
   function esc(s) {
-    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
   // inline formatting for question/choice/explanation text: `code` and **bold**
   function fmt(s) {
@@ -56,29 +56,62 @@
   };
   document.head.appendChild(script);
 
-  var quiz, order, current, score, missed;
+  var quiz, order, current, score, missed, chosenCount;
 
   function start() {
     quiz = (window.QUIZZES || {})[lang.id];
-    if (!quiz) {
+    if (!quiz || !quiz.questions || !quiz.questions.length) {
       root.innerHTML = "<div class='q-card'><p>Quiz data is empty.</p></div>";
       return;
     }
-    restart();
+    renderStart();
   }
 
-  function restart() {
-    order = shuffle(quiz.questions.map(function (_, i) { return i; }));
+  // ---- Start screen: pick how many questions ----
+  function renderStart() {
+    var pool = quiz.questions.length;
+    var min = Math.min(10, pool);
+    if (chosenCount == null) chosenCount = pool;                 // default: whole pool
+    chosenCount = Math.max(min, Math.min(chosenCount, pool));    // clamp
+
+    root.innerHTML =
+      "<div class='q-card start-card'>" +
+        "<span class='q-type'>" + esc(lang.name) + " Quiz</span>" +
+        "<p class='q-text'>How many questions?</p>" +
+        "<div class='slider-row'>" +
+          "<input type='range' id='count-slider' min='" + min + "' max='" + pool +
+            "' value='" + chosenCount + "' step='1' aria-label='Number of questions'>" +
+        "</div>" +
+        "<div class='slider-val'><span id='count-val'>" + chosenCount + "</span> of " + pool + " questions</div>" +
+        "<div class='quiz-actions'><button class='btn primary' id='start-btn'>Start quiz</button></div>" +
+        "<p class='start-note'>Questions are drawn at random from the pool of " + pool +
+          (min < pool ? ". Slide to pick between " + min + " and " + pool + "." : ".") + "</p>" +
+      "</div>";
+
+    var slider = document.getElementById("count-slider");
+    var valEl = document.getElementById("count-val");
+    slider.addEventListener("input", function () {
+      chosenCount = +slider.value;
+      valEl.textContent = slider.value;
+    });
+    document.getElementById("start-btn").addEventListener("click", function () {
+      restart(chosenCount);
+    });
+  }
+
+  function restart(count) {
+    var all = shuffle(quiz.questions.map(function (_, i) { return i; }));
+    order = all.slice(0, count);
     current = 0;
     score = 0;
     missed = [];
     renderQuestion();
   }
 
-  function sectionLink(q) {
-    var title = quiz.sections[q.section] || "Section " + q.section;
-    return "<a class='review-link' href='review.html?lang=" + lang.id + "#s" + q.section + "'>" +
-      "📖 Review: Section " + q.section + " — " + esc(title) + "</a>";
+  function sectionLink(section) {
+    var title = quiz.sections[section] || "Section " + section;
+    return "<a class='review-link' href='review.html?lang=" + lang.id + "#s" + section + "'>" +
+      "📖 Review: Section " + section + " — " + esc(title) + "</a>";
   }
 
   function renderQuestion() {
@@ -155,16 +188,28 @@
         userShown = input.value;
       }
 
-      if (isCorrect) score++;
-      else missed.push(q);
+      var correctShown = q.type === "mc" ? q.choices[q.answer] : q.answerDisplay;
+
+      if (isCorrect) {
+        score++;
+      } else {
+        missed.push({
+          section: q.section,
+          type: q.type,
+          question: q.q,
+          code: q.code || null,
+          yourAnswer: userShown,
+          correctAnswer: correctShown,
+          explain: q.explain
+        });
+      }
 
       var fb = "<div class='feedback " + (isCorrect ? "ok" : "no") + "'>" +
         "<div class='verdict'>" + (isCorrect ? "✅ Correct!" : "❌ Not quite") + "</div>";
       if (!isCorrect) {
-        var correctShown = q.type === "mc" ? q.choices[q.answer] : q.answerDisplay;
         fb += "<div class='correct-answer'><strong>Correct answer:</strong> " + fmt(correctShown) + "</div>";
       }
-      fb += "<div class='explain'>" + fmt(q.explain) + "</div>" + sectionLink(q) + "</div>";
+      fb += "<div class='explain'>" + fmt(q.explain) + "</div>" + sectionLink(q.section) + "</div>";
       document.getElementById("feedback-slot").innerHTML = fb;
 
       var last = current === order.length - 1;
@@ -195,25 +240,45 @@
       "<p class='score-msg'>" + pct + "% — " + msg + "</p>";
 
     if (missed.length) {
-      // group missed questions by section, keep section order
+      // compact "sections to review" summary, grouped and ordered by section
       var bySection = {};
-      missed.forEach(function (q) {
-        (bySection[q.section] = bySection[q.section] || []).push(q);
+      missed.forEach(function (m) {
+        (bySection[m.section] = bySection[m.section] || []).push(m);
       });
-      html += "<h2 style='font-size:18px'>Sections to review</h2><ul class='missed-list'>";
+      html += "<h2 class='results-subhead'>Sections to review</h2><ul class='missed-list'>";
       Object.keys(bySection).map(Number).sort(function (a, b) { return a - b; }).forEach(function (sec) {
         var title = quiz.sections[sec] || "Section " + sec;
+        var n = bySection[sec].length;
         html += "<li><div class='sec'>Section " + sec + " — " + esc(title) + "</div>" +
-          "<div>" + bySection[sec].length + " missed question" + (bySection[sec].length > 1 ? "s" : "") + "</div>" +
+          "<div>" + n + " missed question" + (n > 1 ? "s" : "") + "</div>" +
           "<a href='review.html?lang=" + lang.id + "#s" + sec + "'>Open this section ›</a></li>";
       });
       html += "</ul>";
+
+      // expandable per-question recap: tap to see the question, your answer vs correct
+      html += "<h2 class='results-subhead'>Your incorrect answers <span class='subhead-hint'>(tap to expand)</span></h2>";
+      html += "<div class='miss-details'>";
+      missed.forEach(function (m, i) {
+        html +=
+          "<details class='miss-item'>" +
+            "<summary><span class='miss-badge'>✕</span>" +
+              "<span class='miss-sum-text'>" + fmt(m.question) + "</span></summary>" +
+            "<div class='miss-body'>" +
+              (m.code ? "<pre><code>" + esc(m.code) + "</code></pre>" : "") +
+              "<div class='miss-line your'><span class='miss-lbl'>Your answer</span>" + fmt(m.yourAnswer) + "</div>" +
+              "<div class='miss-line correct'><span class='miss-lbl'>Correct answer</span>" + fmt(m.correctAnswer) + "</div>" +
+              "<div class='miss-explain'>" + fmt(m.explain) + "</div>" +
+              sectionLink(m.section) +
+            "</div>" +
+          "</details>";
+      });
+      html += "</div>";
     }
 
     html += "<div class='quiz-actions' style='margin-top:22px'>" +
       "<a class='btn' href='index.html'>Home</a>" +
       "<button class='btn primary' id='retry-btn'>Try again</button></div>";
     root.innerHTML = html;
-    document.getElementById("retry-btn").addEventListener("click", restart);
+    document.getElementById("retry-btn").addEventListener("click", renderStart);
   }
 })();
