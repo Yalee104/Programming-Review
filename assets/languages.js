@@ -18,9 +18,9 @@ window.LANGUAGES = [
   {
     id: "cuda",
     name: "CUDA",
-    desc: "Kernels, thread hierarchy, memory spaces, shared memory, reductions.",
+    desc: "Kernels, thread hierarchy, index math, memory spaces, shared memory, reductions, unified memory.",
     md: "cuda_study_summary.md",
-    quiz: false,
+    quiz: true,
   },
 ];
 
