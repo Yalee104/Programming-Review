@@ -1,7 +1,9 @@
 // Quiz engine — reads ?lang=<id>, loads quizzes/<id>.js, runs the quiz.
 // Question types:
-//   mc   → { type:"mc", q, code?, choices:[...], answer:<index>, explain, section, level }
-//   fill → { type:"fill", q, code?, accept:[...], answerDisplay, explain, section, level }
+//   mc       → { type:"mc", q, code?, choices:[...], answer:<index>, explain, section, level }
+//   fill     → { type:"fill", q, code?, accept:[...], answerDisplay, explain, section, level }
+//   assemble → { type:"assemble", q, template (uses {#} blanks), blanks:[...], distractors:[...],
+//                explain, section, level }  — tap tokens in order to fill the blanks
 // level: "beginner" | "intermediate" | "advanced"
 (function () {
   var params = new URLSearchParams(location.search);
@@ -12,6 +14,10 @@
   var LEVELS = ["beginner", "intermediate", "advanced"];
   var LEVEL_ICON = { beginner: "🟢", intermediate: "🟡", advanced: "🔴" };
   function levelLabel(l) { return l.charAt(0).toUpperCase() + l.slice(1); }
+
+  var FORMATS = ["mc", "fill", "assemble"];
+  var FORMAT_LABEL = { all: "All", mc: "📝 Multiple-choice", fill: "✍️ Fill-in", assemble: "🧩 Code-assembly" };
+  var TYPE_LABEL = { mc: "Multiple choice", fill: "Fill in the blank", assemble: "Assemble the code" };
 
   function esc(s) {
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -48,6 +54,11 @@
     return "<div class='example'><div class='example-label'>💡 Example usage</div>" +
       "<pre><code>" + esc(ex) + "</code></pre></div>";
   }
+  // fill each {#} in a template with the next value, in order
+  function assembleTemplate(t, values) {
+    var i = 0;
+    return t.replace(/\{#\}/g, function () { return values[i++]; });
+  }
 
   if (!lang || !lang.quiz) {
     root.innerHTML = "<div class='q-card'><p>No quiz available for this language yet. " +
@@ -74,6 +85,7 @@
   var quiz, order, current, score, missed, levelStats;
   var chosenCount = null;
   var chosenLevel = "all";
+  var chosenFormat = "all";
 
   function start() {
     quiz = (window.QUIZZES || {})[lang.id];
@@ -84,37 +96,50 @@
     renderStart();
   }
 
-  function poolIndices(level) {
+  // indices of questions matching BOTH the level and format filters ("all" = no filter)
+  function poolIndices(level, format) {
     var idx = [];
     quiz.questions.forEach(function (q, i) {
-      if (level === "all" || q.level === level) idx.push(i);
+      var lvOk = level === "all" || q.level === level;
+      var fmtOk = format === "all" || q.type === format;
+      if (lvOk && fmtOk) idx.push(i);
     });
     return idx;
   }
 
-  // ---- Start screen: pick difficulty + how many questions ----
+  // ---- Start screen: pick difficulty, format, and how many questions ----
   function renderStart() {
-    var counts = { all: quiz.questions.length };
-    LEVELS.forEach(function (l) { counts[l] = poolIndices(l).length; });
-    if (!counts[chosenLevel]) chosenLevel = "all";   // guard: never land on an empty level
+    // guard: if the current selection has an empty intersection, relax it
+    if (poolIndices(chosenLevel, chosenFormat).length === 0) chosenFormat = "all";
+    if (poolIndices(chosenLevel, chosenFormat).length === 0) chosenLevel = "all";
 
-    var chips =
-      "<div class='level-chips' id='level-chips'>" +
-      ["all"].concat(LEVELS).map(function (l) {
-        var label = l === "all" ? "All" : LEVEL_ICON[l] + " " + levelLabel(l);
-        var disabled = counts[l] === 0;
-        return "<button class='level-chip" + (l === chosenLevel ? " active" : "") +
-          (disabled ? " disabled" : "") + "' data-level='" + l + "'" +
-          (disabled ? " disabled" : "") + ">" + label +
-          "<span class='chip-count'>" + counts[l] + "</span></button>";
-      }).join("") +
-      "</div>";
+    function chipRow(id, keys, activeKey, labelFn, countFn) {
+      return "<div class='level-chips' id='" + id + "'>" +
+        keys.map(function (k) {
+          var count = countFn(k);
+          var disabled = count === 0;
+          return "<button class='level-chip" + (k === activeKey ? " active" : "") +
+            (disabled ? " disabled" : "") + "' data-key='" + k + "'" + (disabled ? " disabled" : "") +
+            ">" + labelFn(k) + "<span class='chip-count'>" + count + "</span></button>";
+        }).join("") + "</div>";
+    }
+
+    var levelChips = chipRow(
+      "level-chips", ["all"].concat(LEVELS), chosenLevel,
+      function (l) { return l === "all" ? "All" : LEVEL_ICON[l] + " " + levelLabel(l); },
+      function (l) { return poolIndices(l, chosenFormat).length; }
+    );
+    var formatChips = chipRow(
+      "format-chips", ["all"].concat(FORMATS), chosenFormat,
+      function (f) { return FORMAT_LABEL[f]; },
+      function (f) { return poolIndices(chosenLevel, f).length; }
+    );
 
     root.innerHTML =
       "<div class='q-card start-card'>" +
         "<span class='q-type'>" + esc(lang.name) + " Quiz</span>" +
-        "<p class='q-text'>Difficulty</p>" +
-        chips +
+        "<p class='q-text'>Difficulty</p>" + levelChips +
+        "<p class='q-text' style='margin-top:18px'>Format</p>" + formatChips +
         "<p class='q-text' style='margin-top:18px'>How many questions?</p>" +
         "<div id='count-area'></div>" +
         "<div class='quiz-actions'><button class='btn primary' id='start-btn'>Start quiz</button></div>" +
@@ -125,13 +150,12 @@
     var note = document.getElementById("start-note");
 
     function renderCountControl() {
-      var pool = counts[chosenLevel];
+      var pool = poolIndices(chosenLevel, chosenFormat).length;
       var min = Math.min(10, pool);
       if (chosenCount == null) chosenCount = pool;
       chosenCount = Math.max(min, Math.min(chosenCount, pool));
 
       if (pool <= min) {
-        // pool too small for a meaningful slider — fixed count
         chosenCount = pool;
         countArea.innerHTML = "<div class='slider-val'><span id='count-val'>" + pool + "</span> question" +
           (pool === 1 ? "" : "s") + " (whole pool)</div>";
@@ -148,30 +172,33 @@
           document.getElementById("count-val").textContent = slider.value;
         });
       }
-      note.textContent = "Questions are drawn at random from the " +
-        (chosenLevel === "all" ? "full pool" : levelLabel(chosenLevel).toLowerCase() + " pool") +
-        " of " + pool + ".";
+      var fmtWord = chosenFormat === "all" ? "" : " " + FORMAT_LABEL[chosenFormat].replace(/^\S+\s/, "").toLowerCase();
+      note.textContent = "Drawing " + pool + fmtWord + " question" + (pool === 1 ? "" : "s") +
+        (chosenLevel === "all" ? "" : " at " + levelLabel(chosenLevel).toLowerCase() + " level") + " at random.";
     }
 
+    // any chip tap re-renders the start screen (all state lives in outer vars)
     document.getElementById("level-chips").addEventListener("click", function (e) {
       var chip = e.target.closest(".level-chip");
       if (!chip || chip.disabled) return;
-      chosenLevel = chip.getAttribute("data-level");
-      Array.prototype.forEach.call(
-        document.querySelectorAll(".level-chip"),
-        function (c) { c.classList.toggle("active", c === chip); }
-      );
-      renderCountControl();
+      chosenLevel = chip.getAttribute("data-key");
+      renderStart();
+    });
+    document.getElementById("format-chips").addEventListener("click", function (e) {
+      var chip = e.target.closest(".level-chip");
+      if (!chip || chip.disabled) return;
+      chosenFormat = chip.getAttribute("data-key");
+      renderStart();
     });
 
     renderCountControl();
     document.getElementById("start-btn").addEventListener("click", function () {
-      restart(chosenCount, chosenLevel);
+      restart(chosenCount, chosenLevel, chosenFormat);
     });
   }
 
-  function restart(count, level) {
-    order = shuffle(poolIndices(level)).slice(0, count);
+  function restart(count, level, format) {
+    order = shuffle(poolIndices(level, format)).slice(0, count);
     current = 0;
     score = 0;
     missed = [];
@@ -187,7 +214,6 @@
 
   function renderQuestion() {
     var q = quiz.questions[order[current]];
-    var typeLabel = q.type === "mc" ? "Multiple choice" : "Fill in the blank";
 
     var html =
       "<div class='progress-track'><div class='progress-fill' style='width:" +
@@ -195,15 +221,27 @@
       "<div class='progress-label'>Question " + (current + 1) + " of " + order.length +
       " · Score " + score + "</div>" +
       "<div class='q-card'>" +
-      "<div class='badge-row'><span class='q-type'>" + typeLabel + "</span>" + levelBadge(q.level) + "</div>" +
+      "<div class='badge-row'><span class='q-type'>" + (TYPE_LABEL[q.type] || "") + "</span>" + levelBadge(q.level) + "</div>" +
       "<p class='q-text'>" + fmt(q.q) + "</p>" +
       (q.code ? "<pre><code>" + esc(q.code) + "</code></pre>" : "");
 
     if (q.type === "mc") {
       html += "<div class='choices' id='choices'></div>";
-    } else {
+    } else if (q.type === "fill") {
       html += "<input class='fill-input' id='fill-input' type='text' autocomplete='off' " +
         "autocapitalize='off' autocorrect='off' spellcheck='false' placeholder='Type your answer…'>";
+    } else if (q.type === "assemble") {
+      var segs = q.template.split("{#}");
+      var codeHtml = "";
+      for (var si = 0; si < segs.length; si++) {
+        codeHtml += esc(segs[si]);
+        if (si < segs.length - 1) {
+          codeHtml += "<button type='button' class='blank' data-b='" + si + "'></button>";
+        }
+      }
+      html += "<pre class='assemble-code'><code>" + codeHtml + "</code></pre>" +
+        "<div class='assemble-hint'>Tap the tokens in order to fill the blanks:</div>" +
+        "<div class='token-bank' id='token-bank'></div>";
     }
     html += "<div id='feedback-slot'></div>" +
       "<div class='quiz-actions'><button class='btn primary' id='submit-btn' disabled>Check answer</button></div>" +
@@ -213,6 +251,8 @@
     var submitBtn = document.getElementById("submit-btn");
     var selected = -1;
     var choiceOrder = [];
+    var placed = null;      // assemble: per-blank { tile, value } or null
+    var bank = null;        // assemble: shuffled token values
 
     if (q.type === "mc") {
       var box = document.getElementById("choices");
@@ -229,7 +269,7 @@
         });
         box.appendChild(b);
       });
-    } else {
+    } else if (q.type === "fill") {
       var input = document.getElementById("fill-input");
       input.addEventListener("input", function () {
         submitBtn.disabled = input.value.trim() === "";
@@ -238,34 +278,88 @@
         if (e.key === "Enter" && !submitBtn.disabled) submitBtn.click();
       });
       setTimeout(function () { input.focus(); }, 50);
+    } else if (q.type === "assemble") {
+      placed = q.blanks.map(function () { return null; });
+      bank = shuffle(q.blanks.concat(q.distractors || []));
+      var bankEl = document.getElementById("token-bank");
+      var blankEls = document.querySelectorAll(".blank");
+
+      function refresh() {
+        blankEls.forEach(function (b) {
+          var i = +b.getAttribute("data-b");
+          if (placed[i]) { b.textContent = placed[i].value; b.classList.add("filled"); }
+          else { b.textContent = ""; b.classList.remove("filled"); }
+        });
+        Array.prototype.forEach.call(bankEl.children, function (t) {
+          var k = +t.getAttribute("data-t");
+          t.classList.toggle("used", placed.some(function (p) { return p && p.tile === k; }));
+        });
+        submitBtn.disabled = placed.some(function (p) { return p === null; });
+      }
+
+      bank.forEach(function (val, k) {
+        var t = document.createElement("button");
+        t.type = "button";
+        t.className = "token";
+        t.setAttribute("data-t", k);
+        t.textContent = val;
+        t.addEventListener("click", function () {
+          if (placed.some(function (p) { return p && p.tile === k; })) return;  // already used
+          for (var i = 0; i < placed.length; i++) {
+            if (placed[i] === null) { placed[i] = { tile: k, value: val }; break; }
+          }
+          refresh();
+        });
+        bankEl.appendChild(t);
+      });
+      blankEls.forEach(function (b) {
+        b.addEventListener("click", function () {
+          var i = +b.getAttribute("data-b");
+          if (placed[i] === null) return;
+          placed[i] = null;   // clear -> its token returns to the bank
+          refresh();
+        });
+      });
+      refresh();
     }
 
     submitBtn.addEventListener("click", function () {
-      var isCorrect, userShown;
+      var isCorrect, userShown, correctShown;
       if (q.type === "mc") {
-        var box = document.getElementById("choices");
+        var mbox = document.getElementById("choices");
         isCorrect = choiceOrder[selected] === q.answer;
-        Array.prototype.forEach.call(box.children, function (c, pos) {
+        Array.prototype.forEach.call(mbox.children, function (c, pos) {
           c.disabled = true;
           if (choiceOrder[pos] === q.answer) c.classList.add("correct");
           else if (pos === selected && !isCorrect) c.classList.add("wrong");
         });
         userShown = q.choices[choiceOrder[selected]];
-      } else {
-        var input = document.getElementById("fill-input");
-        input.disabled = true;
-        var user = normalize(input.value);
+        correctShown = q.choices[q.answer];
+      } else if (q.type === "fill") {
+        var fin = document.getElementById("fill-input");
+        fin.disabled = true;
+        var user = normalize(fin.value);
         isCorrect = q.accept.some(function (a) { return normalize(a) === user; });
-        userShown = input.value;
+        userShown = fin.value;
+        correctShown = q.answerDisplay;
+      } else { // assemble
+        isCorrect = placed.every(function (p, i) { return p && p.value === q.blanks[i]; });
+        document.querySelectorAll(".blank").forEach(function (b) {
+          var i = +b.getAttribute("data-b");
+          b.disabled = true;
+          if (placed[i] && placed[i].value === q.blanks[i]) b.classList.add("ok");
+          else b.classList.add("bad");
+        });
+        document.querySelectorAll(".token").forEach(function (t) { t.disabled = true; });
+        userShown = assembleTemplate(q.template, placed.map(function (p) { return p ? p.value : "▢"; }));
+        correctShown = assembleTemplate(q.template, q.blanks);
       }
-
-      var correctShown = q.type === "mc" ? q.choices[q.answer] : q.answerDisplay;
 
       // per-level tally for the results breakdown
       if (q.level) {
-        var st = levelStats[q.level] || (levelStats[q.level] = { right: 0, total: 0 });
-        st.total++;
-        if (isCorrect) st.right++;
+        var stt = levelStats[q.level] || (levelStats[q.level] = { right: 0, total: 0 });
+        stt.total++;
+        if (isCorrect) stt.right++;
       }
 
       if (isCorrect) {
@@ -287,7 +381,12 @@
       var fb = "<div class='feedback " + (isCorrect ? "ok" : "no") + "'>" +
         "<div class='verdict'>" + (isCorrect ? "✅ Correct!" : "❌ Not quite") + "</div>";
       if (!isCorrect) {
-        fb += "<div class='correct-answer'><strong>Correct answer:</strong> " + fmt(correctShown) + "</div>";
+        if (q.type === "assemble") {
+          fb += "<div class='correct-answer'><strong>Correct code:</strong></div>" +
+            "<pre class='answer-code'><code>" + esc(correctShown) + "</code></pre>";
+        } else {
+          fb += "<div class='correct-answer'><strong>Correct answer:</strong> " + fmt(correctShown) + "</div>";
+        }
       }
       fb += "<div class='explain'>" + fmt(q.explain) + "</div>" +
         exampleBlock(q.example) + sectionLink(q.section) + "</div>";
@@ -331,7 +430,6 @@
     }
 
     if (missed.length) {
-      // compact "sections to review" summary, grouped and ordered by section
       var bySection = {};
       missed.forEach(function (m) {
         (bySection[m.section] = bySection[m.section] || []).push(m);
@@ -346,10 +444,21 @@
       });
       html += "</ul>";
 
-      // expandable per-question recap: tap to see the question, your answer vs correct
       html += "<h2 class='results-subhead'>Your incorrect answers <span class='subhead-hint'>(tap to expand)</span></h2>";
       html += "<div class='miss-details'>";
       missed.forEach(function (m) {
+        var answers;
+        if (m.type === "assemble") {
+          answers =
+            "<div class='miss-line your'><span class='miss-lbl'>Your answer</span>" +
+              "<pre class='answer-code'><code>" + esc(m.yourAnswer) + "</code></pre></div>" +
+            "<div class='miss-line correct'><span class='miss-lbl'>Correct answer</span>" +
+              "<pre class='answer-code'><code>" + esc(m.correctAnswer) + "</code></pre></div>";
+        } else {
+          answers =
+            "<div class='miss-line your'><span class='miss-lbl'>Your answer</span>" + fmt(m.yourAnswer) + "</div>" +
+            "<div class='miss-line correct'><span class='miss-lbl'>Correct answer</span>" + fmt(m.correctAnswer) + "</div>";
+        }
         html +=
           "<details class='miss-item'>" +
             "<summary><span class='miss-badge'>✕</span>" +
@@ -357,8 +466,7 @@
             "<div class='miss-body'>" +
               (m.level ? "<div class='miss-level'>" + levelBadge(m.level) + "</div>" : "") +
               (m.code ? "<pre><code>" + esc(m.code) + "</code></pre>" : "") +
-              "<div class='miss-line your'><span class='miss-lbl'>Your answer</span>" + fmt(m.yourAnswer) + "</div>" +
-              "<div class='miss-line correct'><span class='miss-lbl'>Correct answer</span>" + fmt(m.correctAnswer) + "</div>" +
+              answers +
               "<div class='miss-explain'>" + fmt(m.explain) + "</div>" +
               exampleBlock(m.example) +
               sectionLink(m.section) +

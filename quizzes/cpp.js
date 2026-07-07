@@ -1610,6 +1610,120 @@ window.QUIZZES.cpp = {
       answer: 0,
       explain: "Views don't copy — they re-read the underlying container at ITERATION time. Verified: after nums[1]=999, the former 2 fails the filter and the output is 4 6 8 10. Same lazy model as Python generators, same lifetime care as string_view. (That's also why infinite `views::iota(1) | take(5)` works — verified 1 2 3 4 5.)",
       section: 37
+    },
+    // ---- Code-assembly questions ----
+    {
+      type: "assemble", level: "intermediate", section: 30,
+      q: "Launch `work(12)` asynchronously and get its return value back.",
+      template: "std::{#}<int> fut = std::{#}(std::launch::async, work, 12);\nint result = fut.{#}();",
+      blanks: ["future","async","get"],
+      distractors: ["thread","promise","join"],
+      explain: "std::async runs work concurrently and hands back a std::future<int>; fut.get() blocks until it's ready and returns the value (144). std::thread can't return a value; join()/detach() are thread methods."
+    },
+    {
+      type: "assemble", level: "beginner", section: 20,
+      q: "Create a Widget owned by a unique_ptr and call `greet()` through the pointer.",
+      template: "std::{#}<Widget> p = std::{#}<Widget>(42);\np{#}greet();",
+      blanks: ["unique_ptr","make_unique","->"],
+      distractors: ["shared_ptr","make_shared","."],
+      explain: "make_unique builds the object and returns a unique_ptr (exclusive ownership). Access members through a pointer with -> (p->greet() means (*p).greet()), not the dot operator."
+    },
+    {
+      type: "assemble", level: "beginner", section: 20,
+      q: "Make a shared int, share ownership with a copy, then read the reference count.",
+      template: "auto a = std::{#}<int>(7);\nauto b = a;               // share ownership\nstd::cout << a.{#}();   // 2",
+      blanks: ["make_shared","use_count"],
+      distractors: ["make_unique","count","size"],
+      explain: "make_shared creates a reference-counted shared_ptr; copying it (b = a) bumps the count. use_count() reports how many shared_ptrs own the object — 2 here."
+    },
+    {
+      type: "assemble", level: "intermediate", section: 15,
+      q: "Sum a vector with std::accumulate over its full range.",
+      template: "std::vector<int> v{1, 2, 3, 4};\nint sum = std::{#}(v.{#}(), v.{#}(), 0);   // 10",
+      blanks: ["accumulate","begin","end"],
+      distractors: ["reduce","rbegin","size"],
+      explain: "std::accumulate folds the range [begin, end) starting from the init value 0 -> 10. The init argument's type is the accumulator type (use 0.0 to sum as double)."
+    },
+    {
+      type: "assemble", level: "beginner", section: 27,
+      q: "Hold an optional int and read it with a fallback of -1 when empty.",
+      template: "std::{#}<int> maybe = 5;\nstd::cout << maybe.{#}(-1);   // 5  (or -1 if empty)",
+      blanks: ["optional","value_or"],
+      distractors: ["variant","expected","value"],
+      explain: "std::optional<int> holds 0-or-1 value inline. value_or(-1) returns the value if present, otherwise the fallback — and never throws, unlike value()."
+    },
+    {
+      type: "assemble", level: "intermediate", section: 27,
+      q: "Safely read the active std::string out of a variant without throwing.",
+      template: "std::{#}<int, std::string> v = std::string(\"hi\");\nif (auto* p = std::{#}<std::string>(&v)) std::cout << *p;",
+      blanks: ["variant","get_if"],
+      distractors: ["optional","get","holds_alternative"],
+      explain: "get_if takes a POINTER to the variant and returns a pointer to the value if that type is active, else nullptr — the non-throwing alternative to get (which throws bad_variant_access on a type mismatch)."
+    },
+    {
+      type: "assemble", level: "intermediate", section: 30,
+      q: "Make a thread-safe counter that increments without a mutex.",
+      template: "std::{#}<int> counter{0};\ncounter{#};   // atomic read-modify-write",
+      blanks: ["atomic","++"],
+      distractors: ["mutex","--","store"],
+      explain: "std::atomic<int> makes counter++ a single indivisible hardware operation — safe across threads with no mutex. Ideal for simple counters and flags."
+    },
+    {
+      type: "assemble", level: "beginner", section: 30,
+      q: "Launch `worker(42)` on a new thread and WAIT for it to finish.",
+      template: "std::{#} t(worker, 42);   // launch\nt.{#}();                  // wait for it to finish",
+      blanks: ["thread","join"],
+      distractors: ["future","async","detach","get"],
+      explain: "std::thread starts running immediately; join() blocks until it finishes (detach() would let it run unwaited). Forgetting both before the thread object is destroyed calls std::terminate()."
+    },
+    {
+      type: "assemble", level: "intermediate", section: 33,
+      q: "View a string literal without copying, then take a zero-copy 'hello' substring.",
+      template: "std::{#} sv = \"hello world\";\nstd::cout << sv.{#}(0, 5);   // hello",
+      blanks: ["string_view","substr"],
+      distractors: ["string","substring","slice"],
+      explain: "string_view is a non-owning {pointer, length}; assigning a literal copies nothing. Its substr(0, 5) just narrows the view (O(1)), unlike std::string::substr which allocates a copy."
+    },
+    {
+      type: "assemble", level: "intermediate", section: 34,
+      q: "Convert a scoped-enum (`enum class`) value to its underlying int.",
+      template: "enum class Status { Idle, Running, Done };\nStatus s = Status::Running;\nint i = {#}<int>(s);   // 1",
+      blanks: ["static_cast"],
+      distractors: ["reinterpret_cast","const_cast","dynamic_cast"],
+      explain: "enum class has no implicit int conversion, so you convert explicitly with static_cast<int>(s) -> 1 (and static_cast<Status>(1) back). static_cast handles sensible related-type conversions."
+    },
+    {
+      type: "assemble", level: "advanced", section: 20,
+      q: "Observe a shared object without owning it, then access it safely.",
+      template: "auto s = std::make_shared<int>(7);\nstd::{#}<int> w = s;   // non-owning observer\nif (auto locked = w.{#}()) std::cout << *locked;",
+      blanks: ["weak_ptr","lock"],
+      distractors: ["shared_ptr","unique_ptr","get","expired"],
+      explain: "weak_ptr observes a shared_ptr without bumping the reference count (this breaks cycles). lock() returns a temporary shared_ptr — valid if the object is still alive, empty if it's gone — so access is always safe."
+    },
+    {
+      type: "assemble", level: "beginner", section: 12,
+      q: "Build a vector by appending two ints, then print them (the same token fills two blanks).",
+      template: "std::{#}<int> v;\nv.{#}(10);\nv.{#}(20);\nfor (int x : v) std::cout << x;   // 1020",
+      blanks: ["vector","push_back","push_back"],
+      distractors: ["array","append","insert"],
+      explain: "std::vector is the default dynamic array; push_back appends to the end (amortized O(1)). Note the SAME token fills two blanks — the bank provides two push_back tiles."
+    },
+    {
+      type: "assemble", level: "intermediate", section: 36,
+      q: "Force `factorial(5)` to be computed at compile time.",
+      template: "constexpr int factorial(int n) { return n <= 1 ? 1 : n * factorial(n-1); }\n{#} int f = factorial(5);   // 120, at COMPILE time\nstatic_assert(f == 120);",
+      blanks: ["constexpr"],
+      distractors: ["const","consteval","static"],
+      explain: "A constexpr variable must have a compile-time value, forcing factorial(5) to run during compilation -> 120 baked into the binary (static_assert proves it). Plain const could hold a runtime value."
+    },
+    {
+      type: "assemble", level: "beginner", section: 7,
+      q: "Move a vector's contents into another, leaving the source empty.",
+      template: "std::vector<int> a{1, 2, 3};\nstd::vector<int> b = std::{#}(a);   // steal a's buffer\n// a.size() is now 0",
+      blanks: ["move"],
+      distractors: ["copy","forward","ref"],
+      explain: "std::move is just a cast to an rvalue reference; it lets vector's move constructor steal a's internal buffer into b, leaving a empty (size 0). std::move itself moves nothing."
     }
+
   ]
 };

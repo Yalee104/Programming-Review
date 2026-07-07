@@ -1251,6 +1251,88 @@ window.QUIZZES.python = {
       answer: 0,
       explain: "close() injects GeneratorExit at the paused yield, so cleanup code in finally is guaranteed — the generator counterpart of __exit__. Similarly, g.throw(exc) injects an arbitrary exception at the yield (verified: it propagates out if uncaught).",
       section: 25
+    },
+    // ---- Code-assembly questions ----
+    {
+      type: "assemble", level: "beginner", section: 22,
+      q: "Read a whole file into a string, closing it automatically.",
+      template: "{#} open(\"notes.txt\") {#} f:\n    text = f.{#}()",
+      blanks: ["with","as","read"],
+      distractors: ["for","in","open","readline"],
+      explain: "`with open(path) as f:` opens the file and guarantees it is closed at the end of the block (context manager). f.read() slurps the whole file into one string."
+    },
+    {
+      type: "assemble", level: "beginner", section: 5,
+      q: "Build a list of the squares of 0..4 with a comprehension.",
+      template: "squares = [x*x {#} x {#} range(5)]   # [0, 1, 4, 9, 16]",
+      blanks: ["for","in"],
+      distractors: ["while","of","each"],
+      explain: "A list comprehension reads `[expr for var in iterable]` and eagerly builds the whole list. Round parens instead would make a lazy generator expression."
+    },
+    {
+      type: "assemble", level: "intermediate", section: 19,
+      q: "Group words by their first letter using a defaultdict.",
+      template: "from collections {#} defaultdict\nby_letter = {#}(list)\nby_letter[w[0]].{#}(w)",
+      blanks: ["import","defaultdict","append"],
+      distractors: ["from","dict","add","push"],
+      explain: "defaultdict(list) manufactures an empty list on first access to a missing key, so append never hits a KeyError. `list` is the factory called per new key."
+    },
+    {
+      type: "assemble", level: "beginner", section: 19,
+      q: "Count characters and get the two most common.",
+      template: "from collections import Counter\nc = {#}(\"mississippi\")\nc.{#}(2)   # [('i', 4), ('s', 4)]",
+      blanks: ["Counter","most_common"],
+      distractors: ["dict","count","common"],
+      explain: "Counter tallies any iterable; most_common(n) returns the n highest-count (item, count) pairs. Missing keys read as 0 instead of raising."
+    },
+    {
+      type: "assemble", level: "beginner", section: 14,
+      q: "Auto-generate __init__, __repr__ and __eq__ for a Point.",
+      template: "from dataclasses import dataclass\n\n{#}\nclass Point:\n    x: int\n    y: int",
+      blanks: ["@dataclass"],
+      distractors: ["@property","@staticmethod","@classmethod"],
+      explain: "@dataclass reads the annotated fields and writes __init__/__repr__/__eq__ for you, so Point(1,2) == Point(1,2) is True."
+    },
+    {
+      type: "assemble", level: "intermediate", section: 23,
+      q: "Expose fahrenheit as a computed, read-only attribute.",
+      template: "class Temp:\n    def __init__(self, c): self._c = c\n    {#}\n    def fahrenheit(self):\n        return self._c * 9/5 + 32",
+      blanks: ["@property"],
+      distractors: ["@classmethod","@staticmethod","@dataclass"],
+      explain: "@property lets `t.fahrenheit` (no parentheses) run this method and return a computed value. With no matching setter it is read-only."
+    },
+    {
+      type: "assemble", level: "intermediate", section: 20,
+      q: "Match a 2-element list and capture both items.",
+      template: "{#} value:\n    {#} [a, b]:\n        print(a, b)\n    case _:\n        print(\"other\")",
+      blanks: ["match","case"],
+      distractors: ["switch","when","default","if"],
+      explain: "`match value:` with `case [a, b]:` destructures a 2-element sequence, binding a and b. `case _:` is the wildcard default; the first matching case runs, with no fallthrough."
+    },
+    {
+      type: "assemble", level: "beginner", section: 16,
+      q: "Reverse a list with a single slice.",
+      template: "a = [1, 2, 3, 4]\nrev = a[{#}]   # [4, 3, 2, 1]",
+      blanks: ["::-1"],
+      distractors: [":-1","-1:","::1"],
+      explain: "`a[::-1]` uses a step of -1 to walk the whole sequence backward. It works on any sequence type and returns the same type."
+    },
+    {
+      type: "assemble", level: "intermediate", section: 15,
+      q: "Memoize a recursive fib with functools.",
+      template: "import functools\n\n{#}functools.{#}(maxsize=None)\ndef fib(n):\n    return n if n < 2 else fib(n-1) + fib(n-2)",
+      blanks: ["@","lru_cache"],
+      distractors: ["def","cache","wraps","partial"],
+      explain: "@functools.lru_cache(maxsize=None) caches each unique argument, turning exponential recursive fib into linear. The @ applies the decorator to fib."
+    },
+    {
+      type: "assemble", level: "advanced", section: 25,
+      q: "Prime a generator, then send it a value.",
+      template: "g = averager()\n{#}(g)          # prime to the first yield\ng.{#}(10)       # -> 10.0",
+      blanks: ["next","send"],
+      distractors: ["iter","throw","yield","get"],
+      explain: "A generator with `value = yield` must be advanced to its first yield with next(g) before it can receive anything; then send(10) resumes it, passing 10 in as the value of the yield expression."
     }
+
   ]
 };
