@@ -1333,6 +1333,88 @@ window.QUIZZES.python = {
       distractors: ["iter","throw","yield","get"],
       explain: "A generator with `value = yield` must be advanced to its first yield with next(g) before it can receive anything; then send(10) resumes it, passing 10 in as the value of the yield expression."
     }
+,
+    // ---- Advanced code-assembly (multi-topic) ----
+    {
+      type: "assemble", level: "advanced", section: 18,
+      q: "Define two coroutines and run them concurrently with asyncio, collecting both results.",
+      template: "import asyncio\n\n{#} def fetch(name, delay):          # a coroutine\n    {#} asyncio.sleep(delay)         # yield control while waiting\n    return f\"{name}:{delay}\"\n\nasync def main():\n    return await asyncio.{#}(fetch(\"a\", 0.1), fetch(\"b\", 0.1))   # run concurrently\n\nprint(asyncio.{#}(main()))           # ['a:0.1', 'b:0.1']",
+      blanks: ["async","await","gather","run"],
+      distractors: ["def","yield","wait","call"],
+      explain: "async def makes a coroutine; await asyncio.sleep yields control to the event loop instead of blocking. asyncio.gather runs the coroutines concurrently and returns their results in order; asyncio.run drives the whole thing from sync code."
+    },
+    {
+      type: "assemble", level: "advanced", section: 8,
+      q: "Build a decorator FACTORY: @repeat(3) runs the wrapped function three times and collects the results.",
+      template: "import functools\n\ndef repeat(n):\n    def decorator(func):\n        {#} functools.wraps(func)       # preserve name/doc\n        def wrapper(*args, **kwargs):\n            return [func(*args, **kwargs) for _ in range(n)]\n        return wrapper\n    return {#}                          # hand back the decorator\n\n{#} repeat(3)\ndef greet(name): return f\"hi {name}\"\n# greet(\"Al\") == ['hi Al', 'hi Al', 'hi Al']",
+      blanks: ["@","decorator","@"],
+      distractors: ["wrapper","func","def","return"],
+      explain: "A decorator that takes arguments needs THREE layers: repeat(n) returns `decorator`, which wraps func in `wrapper`. @functools.wraps copies func's metadata onto wrapper. @repeat(3) calls repeat first, then applies the returned decorator to greet."
+    },
+    {
+      type: "assemble", level: "advanced", section: 14,
+      q: "A dataclass with a mutable default and a post-init hook that computes a total.",
+      template: "from dataclasses import dataclass, field\n\n{#}\nclass Cart:\n    items: list = {#}(default_factory=list)   # a fresh list per instance\n    total: float = 0.0\n    def {#}(self):                     # runs right after the generated __init__\n        self.total = sum(self.items)\n# Cart([10, 20, 30]).total == 60",
+      blanks: ["@dataclass","field","__post_init__"],
+      distractors: ["@property","default","__init__","__new__"],
+      explain: "@dataclass generates __init__/__repr__/__eq__. field(default_factory=list) builds a new list per instance (avoiding the shared-mutable-default trap). __post_init__ runs automatically after the generated __init__ — the place to compute derived fields like total."
+    },
+    {
+      type: "assemble", level: "advanced", section: 9,
+      q: "Write a generator-based context manager whose cleanup always runs.",
+      template: "import contextlib\n\n@contextlib.{#}                        # generator-based context manager\ndef tag(name):\n    print(f\"<{name}>\")                 # the __enter__ part\n    {#}:\n        yield\n    {#}:\n        print(f\"</{name}>\")            # the __exit__ part — always runs\n\nwith tag(\"b\"):\n    print(\"hi\")\n# prints:  <b> / hi / </b>",
+      blanks: ["contextmanager","try","finally"],
+      distractors: ["asynccontextmanager","with","except","else"],
+      explain: "@contextlib.contextmanager turns a generator into a context manager: everything before yield is __enter__, everything after (in a finally) is __exit__ — so </b> prints even if the body raises. `except` would only run on an error, not on normal exit."
+    },
+    {
+      type: "assemble", level: "advanced", section: 23,
+      q: "Expose a validated, writable property with getter and setter.",
+      template: "class Account:\n    def __init__(self, bal): self._bal = bal\n    {#}\n    def balance(self): return self._bal\n    @balance.{#}\n    def balance(self, v):\n        if v < 0:\n            {#} ValueError(\"negative\")\n        self._bal = v\n\na = Account(100)\na.balance = 50           # goes through the setter\n# a.balance == 50 ;  a.balance = -1  ->  ValueError",
+      blanks: ["@property","setter","raise"],
+      distractors: ["@classmethod","getter","deleter","return"],
+      explain: "@property makes `a.balance` (no parens) call the getter. @balance.setter registers the setter that runs on `a.balance = v`, where it validates and raises ValueError on a bad value. Without the setter the property would be read-only."
+    },
+    {
+      type: "assemble", level: "advanced", section: 25,
+      q: "A coroutine-style running average driven by send(). (One token is used twice.)",
+      template: "def running_avg():\n    total = count = 0\n    avg = None\n    while True:\n        x = {#} avg              # two-way: emit avg, receive the sent value\n        total += x\n        count += 1\n        avg = total / count\n\ng = running_avg()\n{#}(g)                           # prime to the first yield\nprint(g.{#}(10), g.{#}(20))      # 10.0 15.0",
+      blanks: ["yield","next","send","send"],
+      distractors: ["return","iter","throw","await"],
+      explain: "`x = yield avg` is two-way: it emits avg and, on resume, x receives whatever was sent. You must prime the generator with next(g) (run it to the first yield) before send() works; then send(10)/send(20) feed values in and get the running average back."
+    },
+    {
+      type: "assemble", level: "advanced", section: 19,
+      q: "Count word frequencies with a defaultdict, then rank them by count with a lambda key.",
+      template: "from collections import defaultdict\n\nwords = \"the cat sat on the mat the\".split()\nfreq = defaultdict({#})                 # missing keys start at 0\nfor w in words:\n    freq[w] {#} 1                        # count it\ntop = {#}(freq.items(),\n           key=lambda kv: kv[1], reverse=True)   # by count, highest first\n# top[0] == ('the', 3)",
+      blanks: ["int","+=","sorted"],
+      distractors: ["list","append","+","max"],
+      explain: "defaultdict(int) makes missing keys default to 0, so freq[w] += 1 just works. sorted(items, key=lambda kv: kv[1], reverse=True) orders the (word, count) pairs by count descending; the lambda picks the count as the sort key."
+    },
+    {
+      type: "assemble", level: "advanced", section: 20,
+      q: "Classify a Point with structural pattern matching, including a guard on the general case.",
+      template: "from dataclasses import dataclass\n@dataclass\nclass Point:\n    x: int\n    y: int\n\ndef where(p):\n    {#} p:\n        {#} Point(x=0, y=0):\n            return \"origin\"\n        case Point(x=0, y=yy):\n            return f\"y-axis {yy}\"\n        case Point(x=xx, y=yy) {#} xx == yy:   # guard\n            return \"diagonal\"\n        case _:\n            return \"general\"\n# where(Point(3, 3)) == \"diagonal\"",
+      blanks: ["match","case","if"],
+      distractors: ["switch","when","where","and"],
+      explain: "`match p:` with class patterns like `case Point(x=0, y=0):` destructures by attribute. A case can add a guard with `if` — `case Point(x=xx, y=yy) if xx == yy:` only matches when the guard is also true. First matching case wins; no fallthrough."
+    },
+    {
+      type: "assemble", level: "advanced", section: 11,
+      q: "Define an abstract base class with an abstract method, then sum a concrete subclass's areas.",
+      template: "from abc import ABC, {#}\n\nclass Shape(ABC):\n    {#}\n    def area(self): ...\n\nclass Circle(Shape):\n    def __init__(self, r): self.r = r\n    def area(self): return 3.14 * self.r ** 2\n\nshapes = [Circle(2)]\nprint(sum(s.area() {#} s in shapes))   # 12.56  (Shape() itself -> TypeError)",
+      blanks: ["abstractmethod","@abstractmethod","for"],
+      distractors: ["ABCMeta","@property","@classmethod","in"],
+      explain: "Inheriting from ABC plus decorating area() with @abstractmethod makes Shape non-instantiable until a subclass implements area(). Circle does, so Circle(2).area() works; `sum(s.area() for s in shapes)` uses a generator expression to total them (12.56)."
+    },
+    {
+      type: "assemble", level: "advanced", section: 9,
+      q: "Write a full class-based context manager that suppresses a chosen exception type.",
+      template: "class Suppress:\n    def __init__(self, exc): self.exc = exc\n    def {#}(self): return self                    # runs on entering `with`\n    def {#}(self, exc_type, exc_val, tb):         # runs on exit, even on error\n        return exc_type is not None and issubclass(exc_type, self.exc)\n\nwith Suppress(ValueError):\n    {#} ValueError(\"boom\")\nprint(\"survived\")     # __exit__ returned True -> the exception was swallowed",
+      blanks: ["__enter__","__exit__","raise"],
+      distractors: ["__init__","__call__","throw","return"],
+      explain: "The `with` protocol calls __enter__ on entry and __exit__ on exit (even when the body raises). Returning a truthy value from __exit__ SWALLOWS the exception — here it returns True only for the chosen type, so the raised ValueError is suppressed and 'survived' prints."
+    }
 
   ]
 };
