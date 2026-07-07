@@ -75,6 +75,7 @@ window.QUIZZES.cuda = {
       ],
       answer: 0,
       explain: "`<<<blocks, threadsPerBlock>>>` launches blocks × threadsPerBlock threads — here 6, each printing its own line. Order BETWEEN blocks is not guaranteed; the GPU schedules blocks whenever it likes.",
+      example: "hello<<<2, 3>>>();          // 2 blocks x 3 threads = 6 threads\ncudaDeviceSynchronize();    // launches are ASYNC — wait for the GPU",
       section: 2
     },
     {
@@ -128,6 +129,7 @@ window.QUIZZES.cuda = {
       ],
       answer: 0,
       explain: "Each thread knows its block (blockIdx.x), the block width (blockDim.x), and its position within the block (threadIdx.x). block × width + position = a unique global index across the whole grid.",
+      example: "__global__ void k() {\n    int idx = blockIdx.x * blockDim.x + threadIdx.x;\n    // block 2, thread 1 with blockDim.x==4  ->  idx 9\n}\nk<<<3, 4>>>();   // 12 threads, global idx 0..11",
       section: 4
     },
     {
@@ -200,6 +202,7 @@ window.QUIZZES.cuda = {
       ],
       answer: 0,
       explain: "Ceiling division rounds the grid UP, so the final block can have threads with i >= n. The guard makes them do nothing instead of corrupting memory past the array end. Memorize the pair: ceiling division + bounds guard.",
+      example: "__global__ void vecAdd(const float* a, const float* b, float* c, int n) {\n    int i = blockIdx.x * blockDim.x + threadIdx.x;\n    if (i < n) c[i] = a[i] + b[i];        // guard: skip leftover threads\n}\nint threads = 256;\nint blocks  = (n + threads - 1) / threads;   // ceiling division\nvecAdd<<<blocks, threads>>>(da, db, dc, n);",
       section: 5
     },
     // ---- Section 6
@@ -216,6 +219,7 @@ window.QUIZZES.cuda = {
       ],
       answer: 0,
       explain: "Each thread starts at its global index and hops by the total thread count, so any N is covered no matter how few threads you launched. This is the recommended default kernel shape — correctness independent of launch configuration.",
+      example: "__global__ void scale(float* x, float f, int n) {\n    int stride = blockDim.x * gridDim.x;      // total threads in grid\n    for (int i = blockIdx.x*blockDim.x + threadIdx.x; i < n; i += stride)\n        x[i] *= f;                            // handles ANY n\n}\nscale<<<2, 4>>>(dx, 2.0f, 10);   // x -> 0 2 4 6 8 10 12 14 16 18",
       section: 6
     },
     {
@@ -245,6 +249,7 @@ window.QUIZZES.cuda = {
       ],
       answer: 0,
       explain: "CUDA calls fail silently unless checked. API calls return cudaError_t; launches need cudaGetLastError() for configuration errors and cudaDeviceSynchronize() for runtime errors. Everyone wraps this in a CUDA_CHECK macro printing cudaGetErrorString(err).",
+      example: "#define CUDA_CHECK(call) do {                                 \\\n    cudaError_t e = (call);                                    \\\n    if (e != cudaSuccess) {                                    \\\n        fprintf(stderr, \"CUDA: %s\\n\", cudaGetErrorString(e)); \\\n        exit(1); }                                             \\\n} while (0)\n\nCUDA_CHECK(cudaMalloc(&da, bytes));\nmyKernel<<<blocks, threads>>>(da);\nCUDA_CHECK(cudaGetLastError());     // catches a bad launch config",
       section: 7
     },
     {
@@ -274,6 +279,7 @@ window.QUIZZES.cuda = {
       ],
       answer: 0,
       explain: "`__device__` = helper that runs on the GPU, callable from kernels/other device functions. Calling it from host code is a compile error — the qualifiers tell nvcc where each function must be compiled to run. (`__global__` = host-callable kernel; `__host__` = plain CPU function.)",
+      example: "__device__ float square(float x) { return x * x; }        // GPU-only\n__host__ __device__ float cube(float x) { return x*x*x; }  // BOTH sides\n\n__global__ void k(const float* in, float* out, int n) {\n    int i = blockIdx.x*blockDim.x + threadIdx.x;\n    if (i < n) out[i] = square(in[i]);   // kernel calls a __device__ fn\n}",
       section: 8
     },
     {
@@ -347,6 +353,7 @@ window.QUIZZES.cuda = {
       ],
       answer: 0,
       explain: "__syncthreads() is a barrier: every thread in the block must arrive before any proceeds. It separates the 'everyone writes' phase from the 'everyone reads' phase — skip it and you read garbage from slots not yet written.",
+      example: "__global__ void neighborSum(const int* in, int* out, int n) {\n    __shared__ int tile[256];\n    int i = threadIdx.x;\n    tile[i] = in[i];        // phase 1: everyone writes\n    __syncthreads();        // barrier — wait for ALL writes\n    int L = (i==0)?0:tile[i-1], R = (i==n-1)?0:tile[i+1];\n    out[i] = L + tile[i] + R;   // phase 2: read neighbors safely\n}",
       section: 10
     },
     {
@@ -391,6 +398,7 @@ window.QUIZZES.cuda = {
       ],
       answer: 0,
       explain: "64 threads add pairs, then 32, 16, 8, 4, 2, 1 — log2(128) = 7 iterations instead of 127 sequential additions. Verified in the summary: two blocks over N=256 produce partials 8128 and 24512, total 32640 = 255·256/2.",
+      example: "__global__ void blockSum(const int* in, int* out) {\n    __shared__ int s[128];\n    int t = threadIdx.x;\n    s[t] = in[blockIdx.x*blockDim.x + t];\n    __syncthreads();\n    for (int stride = blockDim.x/2; stride > 0; stride >>= 1) {\n        if (t < stride) s[t] += s[t + stride];\n        __syncthreads();          // OUTSIDE the if — all threads reach it\n    }\n    if (t == 0) out[blockIdx.x] = s[0];   // one partial sum per block\n}",
       section: 11
     },
     {
@@ -420,6 +428,7 @@ window.QUIZZES.cuda = {
       ],
       answer: 0,
       explain: "Unified memory removes the copy boilerplate: the CPU writes the arrays directly, the kernel reads/writes the same pointers. Great for learning and prototyping; explicit cudaMemcpy still wins for peak performance.",
+      example: "float *a, *b, *c;\ncudaMallocManaged(&a, N*sizeof(float));   // ONE pointer, CPU + GPU\n// ... fill a, b on the CPU directly, no cudaMemcpy ...\nvecAdd<<<blocks, threads>>>(a, b, c, N);\ncudaDeviceSynchronize();   // REQUIRED before the CPU reads c\ncudaFree(a);",
       section: 12
     },
     {
@@ -451,6 +460,7 @@ window.QUIZZES.cuda = {
       ],
       answer: 0,
       explain: "Row-major storage lays rows end to end, so element (row, col) sits at row × cols + col. x conventionally maps to columns and y to rows; the same 1D idioms apply per axis.",
+      example: "__global__ void matAdd(const float* A, const float* B, float* C,\n                       int rows, int cols) {\n    int col = blockIdx.x*blockDim.x + threadIdx.x;   // x -> columns\n    int row = blockIdx.y*blockDim.y + threadIdx.y;   // y -> rows\n    if (row < rows && col < cols) {\n        int i = row*cols + col;      // 2D coords -> flat row-major index\n        C[i] = A[i] + B[i];\n    }\n}",
       section: 13
     },
     {
@@ -465,6 +475,7 @@ window.QUIZZES.cuda = {
       ],
       answer: 0,
       explain: "Same guard idiom as 1D, applied per axis: ceiling division rounds the grid up (`dim3 grid((cols+15)/16, (rows+15)/16)`), so most threads in a tiny matrix fall outside the bounds and must be masked off. Verified example: C = A + 100 for the 2×3 case.",
+      example: "dim3 block(16, 16);                             // 256 threads per block\ndim3 grid((cols + block.x - 1) / block.x,       // ceiling division per axis\n          (rows + block.y - 1) / block.y);\nmatAdd<<<grid, block>>>(dA, dB, dC, rows, cols);\n// for a 2x3 matrix most of the 256 threads are masked by the bounds check",
       section: 13
     }
   ]

@@ -279,6 +279,31 @@ p.page-sub { color: var(--muted); margin: 0 4px 20px; font-size: 15px; }
   text-decoration: none;
 }
 
+/* Usage-example code block inside feedback and recap */
+.example { margin: 12px 0 4px; }
+.example-label {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.feedback .example pre,
+.miss-body .example pre {
+  background: var(--code-bg);
+  color: var(--code-text);
+  padding: 12px 14px;
+  border-radius: 10px;
+  overflow-x: auto;
+  font-size: 12.5px;
+  line-height: 1.5;
+  margin: 0;
+  -webkit-overflow-scrolling: touch;
+}
+.feedback .example pre code,
+.miss-body .example pre code { background: none; padding: 0; color: inherit; }
+
 /* Results */
 .score-big { font-size: 42px; font-weight: 800; text-align: center; margin: 18px 0 2px; }
 .score-msg { text-align: center; color: var(--muted); margin-bottom: 20px; }
