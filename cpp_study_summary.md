@@ -41,6 +41,83 @@ class  Bar { int x; };    // x is private by default
 // everything else identical — constructors, methods, inheritance, virtual
 ```
 
+**Aggregate initialization — brace-initializing a type member-by-member, with no constructor.**
+
+`Multiplier times3{3};` (used in sections 24 and 30) works because `Multiplier` is an **aggregate**. An aggregate is a simple type — a plain `struct`/`class` or array — that satisfies ALL of these:
+- no user-declared or inherited constructors,
+- no `private` or `protected` non-static data members,
+- no virtual functions, and
+- no virtual/private/protected base classes.
+
+For such a type the compiler lets you fill the members DIRECTLY with braces, in declaration order, without writing any constructor:
+
+```cpp
+struct Point { int x; int y; };                 // aggregate: no ctor, all public, no virtual
+struct Multiplier { int factor;                 // still an aggregate — a method is fine,
+    int operator()(int v) const { return v * factor; } };   // it's data members/ctors that matter
+struct Line { Point start; Point end; };        // nested aggregate
+```
+✅ Verified — members are filled positionally, and anything you leave out is **value-initialized** (zeroed):
+```cpp
+Point p{3, 4};        // p.x=3, p.y=4  -- filled in order
+Point zero{};         // 0,0           -- empty braces zero EVERY member
+Point partial{7};     // 7,0           -- fewer initializers: the rest are value-initialized
+```
+
+**Designated initializers (C++20) — initialize members by NAME**, which is clearer and order-proof for structs with many fields:
+```cpp
+Point d{.x = 5, .y = 9};   // 5,9
+Point d2{.y = 8};          // 0,8  -- name only some; omitted members are value-initialized
+```
+⚠️ In C++ (unlike C) designators must appear in declaration order — `{.y = 8, .x = 5}` is an error.
+
+**Nested aggregates** just nest the braces:
+```cpp
+Line seg{{0, 0}, {2, 3}};   // seg.start = (0,0), seg.end = (2,3) -- verified seg.end.x=2
+```
+
+And the case that started this — the functor is an aggregate, so `{3}` sets `factor`:
+```cpp
+Multiplier times3{3};   // factor = 3, no constructor needed
+times3(7);               // 21  -- verified
+```
+
+**What DISQUALIFIES a type (and what happens then):** add any one of the four disqualifiers and brace init stops being aggregate init.
+
+❌ A user-declared constructor — now `{...}` calls THAT constructor instead:
+```cpp
+struct HasCtor {
+    int x;
+    HasCtor(int a, int b) : x(a) {}   // user-declared ctor -> NOT an aggregate
+};
+HasCtor h{1, 2};      // OK, but this now calls the CONSTRUCTOR, not aggregate init
+HasCtor bad{1, 2, 3}; // error: no matching function for call to 'HasCtor::HasCtor(...)' -- verified
+```
+❌ A `private`/`protected` non-static data member — no aggregate init, and no implicit constructor to fall back on:
+```cpp
+struct HasPrivate {
+    int x;
+private:
+    int secret;       // private data member -> NOT an aggregate
+};
+HasPrivate h{1, 2};   // error: no matching function for call to 'HasPrivate::HasPrivate(...)' -- verified
+```
+
+Quick reference:
+```
+aggregate                → struct/class/array with: NO user-declared/inherited ctors,
+                           NO private/protected non-static data members, NO virtual
+                           functions, NO virtual/private/protected bases
+T obj{a, b, c}           → aggregate init: members filled in declaration order, no ctor
+T obj{}                  → every member value-initialized (zeroed) (verified 0,0)
+fewer initializers       → the remaining members are value-initialized (verified 7,0)
+T obj{.x = 1, .z = 3}    → C++20 designated initializers (by name; must be in order)
+nested aggregate         → nest the braces: Line{{0,0},{2,3}} (verified)
+methods DON'T disqualify → operator()/member functions are fine; Multiplier{3} is an aggregate
+user-declared ctor       → brace init calls the CONSTRUCTOR instead (verified error on arity)
+private/protected member → not an aggregate, brace init fails to compile (verified)
+```
+
 ---
 
 ## 4. Access Modifiers
@@ -1227,9 +1304,12 @@ try {
 
 **Requires a polymorphic source type** (at least one `virtual` function) — RTTI only exists for classes with a vtable:
 ```cpp
-class Base { public: int x; };            // no virtual functions
+struct Base { int x; };                    // no virtual functions -> non-polymorphic
+struct Derived : Base { int y; };
+Base b;
 Derived* d = dynamic_cast<Derived*>(&b);
-// error: cannot 'dynamic_cast' (source type is not polymorphic)   -- verified
+// error: cannot 'dynamic_cast' '& b' (of type 'struct Base*') to type
+//        'struct Derived*' (source type is not polymorphic)   -- verified
 ```
 
 **9. `typeid` — asking an object what it really is**
@@ -1719,6 +1799,7 @@ All three verified running on a different thread id than `main`.
 
 **`joinable()`** tells you whether a thread still needs `join()` or `detach()`:
 ```cpp
+std::thread t4(worker, 4);   // create a thread (worker is defined above)
 t4.joinable();   // true before join()
 t4.join();
 t4.joinable();   // false after join() -- verified
@@ -1739,6 +1820,7 @@ std::thread t5(increment, std::ref(counter));   // std::ref -- really modifies c
 t5.join();
 counter;   // 100 -- verified, really modified
 
+int counter2 = 0;
 std::thread t(increment, counter2);   // WITHOUT std::ref
 // error: static assertion failed: std::thread arguments must be invocable after conversion to rvalues
 // -- verified compile error; increment wants int&, a by-value copy can't bind to it
