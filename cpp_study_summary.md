@@ -1667,16 +1667,20 @@ struct Widget {                                            // 5. member function
     int getValue() const { return value; }
 };
 ```
-Usage (verified):
+Usage (verified) — note every object is created before it's used:
 ```cpp
-add(2, 3);            // 5
-fp(2, 3);               // 5   -- same function, called through the pointer
-times3(7);                // 21  -- functor call
+Multiplier times3{3};                  // create the functor with factor = 3
+Widget      w;                          // an object to call the member function on
+Widget*     wp = &w;                    // and a pointer to that same object
+
+add(2, 3);                 // 5
+fp(2, 3);                  // 5   -- same function, called through the pointer
+times3(7);                 // 21  -- functor call (7 * factor 3)
 square(5);                 // 25  -- lambda call
 
 int (Widget::*mfp)() const = &Widget::getValue;   // note the ClassName::* syntax
-(w.*mfp)();                                          // 10 -- .*  to call through an OBJECT
-(wp->*mfp)();                                         // 10 -- ->* to call through a POINTER
+(w.*mfp)();                 // 10 -- .*  to call through an OBJECT
+(wp->*mfp)();              // 10 -- ->* to call through a POINTER
 ```
 Member function pointers need this special `.*`/`->*` syntax because a bare member function has no meaning without an object to run on — `&Widget::getValue` is essentially "an offset into any Widget," not a callable address by itself.
 
