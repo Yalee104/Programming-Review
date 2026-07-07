@@ -426,6 +426,7 @@ window.QUIZZES.python = {
       ],
       answer: 0,
       explain: "The wrapper function replaces the original entirely, so without `wraps` the decorated function's `__name__` becomes \"wrapper\" and its docstring is lost. `functools.wraps` copies the original's metadata onto the wrapper.",
+      example: "import functools\ndef log(func):\n    @functools.wraps(func)          # preserves name/docstring\n    def wrapper(*a, **k):\n        print(f\"calling {func.__name__}\")\n        return func(*a, **k)\n    return wrapper\n@log\ndef add(a, b): return a + b\nadd(2, 3)          # prints \"calling add\", returns 5",
       section: 8
     },
     {
@@ -487,6 +488,7 @@ window.QUIZZES.python = {
       ],
       answer: 0,
       explain: "Everything before `yield` is `__enter__`, the yielded value becomes the `as` variable, and everything after the yield — placed in a `finally` so it runs even if the body raises — is `__exit__`.",
+      example: "import contextlib\n@contextlib.contextmanager\ndef tag(name):\n    print(f\"<{name}>\")        # __enter__\n    try:\n        yield\n    finally:\n        print(f\"</{name}>\")   # __exit__ (runs even on error)\nwith tag(\"b\"):\n    print(\"hi\")\n# <b> / hi / </b>",
       section: 9
     },
 
@@ -679,6 +681,7 @@ window.QUIZZES.python = {
       ],
       answer: 0,
       explain: "`@dataclass` generates `__init__` (from the fields), `__repr__` (Point(x=1, y=2)), and `__eq__` (field-by-field comparison) — verified: `Point(1,2) == Point(1,2)` is True.",
+      example: "from dataclasses import dataclass, field\n@dataclass\nclass Point:\n    x: int\n    y: int\n    tags: list = field(default_factory=list)  # fresh list per instance\nPoint(1, 2)              # Point(x=1, y=2, tags=[])\nPoint(1, 2) == Point(1, 2)   # True (auto __eq__)",
       section: 14
     },
     {
@@ -719,6 +722,7 @@ window.QUIZZES.python = {
       accept: ["lru_cache", "functools.lru_cache", "@lru_cache", "@functools.lru_cache", "cache", "functools.cache"],
       answerDisplay: "`functools.lru_cache` (or `functools.cache`)",
       explain: "`@functools.lru_cache(maxsize=None)` remembers each unique set of arguments. It turns naive recursive fib(30) from ~2.7 million calls into just 31 — exponential to linear.",
+      example: "import functools\n@functools.lru_cache(maxsize=None)\ndef fib(n):\n    return n if n < 2 else fib(n-1) + fib(n-2)\nfib(30)   # 832040 — body runs 31x, not ~2.7 million",
       section: 15
     },
     {
@@ -748,6 +752,7 @@ window.QUIZZES.python = {
       ],
       answer: 0,
       explain: "`functools.partial(func, **preset)` pre-binds some arguments and hands back a new callable needing only the rest. `square(5)` runs `power(5, exponent=2)` → 25; `cube(5)` → 125. Verified.",
+      example: "import functools\ndef power(base, exponent): return base ** exponent\nsquare = functools.partial(power, exponent=2)\ncube   = functools.partial(power, exponent=3)\nsquare(5)   # 25\ncube(5)     # 125",
       section: 15
     },
 
@@ -787,6 +792,7 @@ window.QUIZZES.python = {
       accept: ["a[::-1]", "[::-1]", "a[:: -1]", "a[::- 1]"],
       answerDisplay: "`a[::-1]`",
       explain: "A step of -1 walks backward through the whole sequence. It works on any sequence type and returns the same type (list in, list out; str in, str out).",
+      example: "a = [0, 1, 2, 3, 4, 5]\na[::-1]     # [5, 4, 3, 2, 1, 0]  -- reversed\na[2:5]      # [2, 3, 4]           -- start incl, stop excl\n\"hello\"[::-1]  # 'olleh'          -- works on any sequence",
       section: 16
     },
     {
@@ -922,6 +928,7 @@ window.QUIZZES.python = {
       ],
       answer: 0,
       explain: "A plain dict raises KeyError on `plain[\"a\"].append(...)` when the key is new (verified). defaultdict calls its factory on first access to a missing key, so grouping needs no 'if key not in dict' dance. `defaultdict(int)` similarly makes counters (missing keys start at 0).",
+      example: "from collections import defaultdict\nby_letter = defaultdict(list)          # missing key -> new list\nfor w in [\"apple\", \"avocado\", \"banana\"]:\n    by_letter[w[0]].append(w)\n# {'a': ['apple', 'avocado'], 'b': ['banana']}",
       section: 19
     },
     {
@@ -936,6 +943,7 @@ window.QUIZZES.python = {
       ],
       answer: 0,
       explain: "Counter counts everything ('i' and 's' appear 4× each — verified) and, unlike a plain dict, returns 0 for missing keys instead of raising. Counters also support +/- multiset arithmetic (negative results are dropped).",
+      example: "from collections import Counter\nc = Counter(\"mississippi\")\nc.most_common(2)   # [('i', 4), ('s', 4)]\nc[\"z\"]             # 0  (missing keys -> 0, no KeyError)",
       section: 19
     },
     {
@@ -951,6 +959,7 @@ window.QUIZZES.python = {
       ],
       answer: 0,
       explain: "A deque with maxlen is a ring buffer: appending to a full deque silently discards from the OPPOSITE end (verified: 1 and 2 are gone). deques also give O(1) append/pop at BOTH ends, where a list's front operations are O(n).",
+      example: "from collections import deque\nring = deque(maxlen=3)\nfor i in range(1, 6):\n    ring.append(i)\n# deque([3, 4, 5], maxlen=3)  -- 1 and 2 fell off",
       section: 19
     },
     {
@@ -980,6 +989,7 @@ window.QUIZZES.python = {
       ],
       answer: 0,
       explain: "The first matching case runs and the match ends — fallthrough doesn't exist. match also works on any type (not just integers) and can destructure while matching: sequences, mappings, and class patterns.",
+      example: "def kind(v):\n    match v:\n        case [a, b]:          return f\"pair {a},{b}\"\n        case {\"name\": n}:     return f\"named {n}\"\n        case _:               return \"other\"\nkind([1, 2])              # 'pair 1,2'\nkind({\"name\": \"Aaron\"})   # 'named Aaron'",
       section: 20
     },
     {
@@ -1102,6 +1112,7 @@ window.QUIZZES.python = {
       ],
       answer: 0,
       explain: "Properties keep attribute syntax while running code — verified: t.fahrenheit recomputes from the current celsius (77.0, then 212.0 after t.celsius = 100). The idiom: start with plain attributes, upgrade to properties later without changing callers.",
+      example: "class Temp:\n    def __init__(self, c): self._c = c\n    @property\n    def fahrenheit(self):            # accessed with NO parens\n        return self._c * 9/5 + 32\nTemp(25).fahrenheit    # 77.0  (computed on access)",
       section: 23
     },
     {
@@ -1132,6 +1143,7 @@ window.QUIZZES.python = {
       ],
       answer: 0,
       explain: "Verified: type(Derived.create()) is Derived. Hardcoding `return Base()` would break every subclass's inherited constructor. That's the difference from @staticmethod, which receives neither cls nor self.",
+      example: "class Pizza:\n    def __init__(self, t): self.toppings = t\n    @classmethod\n    def margherita(cls):             # alternative constructor\n        return cls([\"tomato\", \"mozzarella\"])\nPizza.margherita().toppings   # ['tomato', 'mozzarella']",
       section: 23
     },
     // ---- Section 24
@@ -1176,6 +1188,7 @@ window.QUIZZES.python = {
       ],
       answer: 0,
       explain: "Verified: permutations('ABC', 2) gives 6 ordered pairs (AB, AC, BA, BC, CA, CB); combinations gives only the 3 unordered picks (AB, AC, BC). product() is the third sibling — full cartesian product across multiple iterables.",
+      example: "import itertools as it\nlist(it.permutations(\"ABC\", 2))\n# [('A','B'),('A','C'),('B','A'),('B','C'),('C','A'),('C','B')]\nlist(it.combinations(\"ABC\", 2))\n# [('A','B'), ('A','C'), ('B','C')]  -- order ignored",
       section: 24
     },
     {
@@ -1221,6 +1234,7 @@ window.QUIZZES.python = {
       ],
       answer: 0,
       explain: "`value = yield avg` can only RECEIVE once the generator is paused at that yield. send() to a just-started generator raises 'TypeError: can't send non-None value to a just-started generator'. Verified: after priming, send(10)/send(20)/send(60) return 10.0, 15.0, 30.0 — state persists across calls. This coroutine style is the ancestor of async/await.",
+      example: "def averager():\n    total = count = 0; avg = None\n    while True:\n        v = yield avg          # emit avg, receive next send()\n        total += v; count += 1; avg = total / count\ng = averager()\nnext(g)          # prime it (run to first yield)\ng.send(10)       # 10.0\ng.send(20)       # 15.0",
       section: 25
     },
     {

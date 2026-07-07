@@ -42,6 +42,12 @@
     if (!level) return "";
     return "<span class='level-badge " + level + "'>" + LEVEL_ICON[level] + " " + levelLabel(level) + "</span>";
   }
+  // optional usage-example code block shown after answering
+  function exampleBlock(ex) {
+    if (!ex) return "";
+    return "<div class='example'><div class='example-label'>💡 Example usage</div>" +
+      "<pre><code>" + esc(ex) + "</code></pre></div>";
+  }
 
   if (!lang || !lang.quiz) {
     root.innerHTML = "<div class='q-card'><p>No quiz available for this language yet. " +
@@ -273,7 +279,8 @@
           code: q.code || null,
           yourAnswer: userShown,
           correctAnswer: correctShown,
-          explain: q.explain
+          explain: q.explain,
+          example: q.example || null
         });
       }
 
@@ -282,7 +289,8 @@
       if (!isCorrect) {
         fb += "<div class='correct-answer'><strong>Correct answer:</strong> " + fmt(correctShown) + "</div>";
       }
-      fb += "<div class='explain'>" + fmt(q.explain) + "</div>" + sectionLink(q.section) + "</div>";
+      fb += "<div class='explain'>" + fmt(q.explain) + "</div>" +
+        exampleBlock(q.example) + sectionLink(q.section) + "</div>";
       document.getElementById("feedback-slot").innerHTML = fb;
 
       var last = current === order.length - 1;
@@ -352,6 +360,7 @@
               "<div class='miss-line your'><span class='miss-lbl'>Your answer</span>" + fmt(m.yourAnswer) + "</div>" +
               "<div class='miss-line correct'><span class='miss-lbl'>Correct answer</span>" + fmt(m.correctAnswer) + "</div>" +
               "<div class='miss-explain'>" + fmt(m.explain) + "</div>" +
+              exampleBlock(m.example) +
               sectionLink(m.section) +
             "</div>" +
           "</details>";

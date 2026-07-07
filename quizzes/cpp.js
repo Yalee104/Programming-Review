@@ -126,6 +126,7 @@ window.QUIZZES.cpp = {
       ],
       answer: 0,
       explain: "An aggregate (no user-declared/inherited ctors, no private/protected data members, no virtual functions/bases) can be brace-initialized member by member. A method like operator() does NOT disqualify it — only data members and constructors matter. Verified: times3(7) == 21.",
+      example: "struct Point { int x; int y; };\nPoint p{3, 4};          // x=3, y=4  (members in order)\nPoint zero{};           // 0, 0      (all value-initialized)\nPoint d{.y = 8};        // 0, 8      (C++20 designated init)",
       section: 3
     },
     {
@@ -450,6 +451,7 @@ window.QUIZZES.cpp = {
       ],
       answer: 0,
       explain: "Iterating an associative container yields `pair<const Key, Value>`; `const auto& [key, value]` unpacks each pair cleanly instead of using `.first`/`.second`.",
+      example: "std::map<std::string, int> m{{\"a\", 1}, {\"b\", 2}};\nfor (const auto& [key, value] : m)\n    std::cout << key << \"=\" << value << \" \";\n// a=1 b=2",
       section: 14
     },
     {
@@ -479,6 +481,7 @@ window.QUIZZES.cpp = {
       ],
       answer: 0,
       explain: "The accumulator (and return) type is the type of `init`. `accumulate(b, e, 0)` returns int; `accumulate(b, e, 0.0)` returns double — a classic bug source when summing doubles with an int seed.",
+      example: "std::vector<int> v{1, 2, 3, 4};\nstd::accumulate(v.begin(), v.end(), 0);     // 10   (int)\nstd::accumulate(v.begin(), v.end(), 0.0);   // 10.0 (double!)",
       section: 15
     },
     {
@@ -643,6 +646,7 @@ window.QUIZZES.cpp = {
       ],
       answer: 0,
       explain: "`unique_ptr` is move-only. Moving transfers sole ownership: `p1 == nullptr` afterward, `p2` is the owner. Copying (`unique_ptr b = p2;`) is a compile error — the copy constructor is deleted.",
+      example: "auto p1 = std::make_unique<int>(42);\nauto p2 = std::move(p1);    // ownership transferred\n// p1 == nullptr (true),  *p2 == 42\n// auto p3 = p2;   // ERROR: unique_ptr is not copyable",
       section: 20
     },
     {
@@ -685,6 +689,7 @@ window.QUIZZES.cpp = {
       ],
       answer: 0,
       explain: "`.lock()` is what makes weak_ptr safe: it atomically produces a temporary owning shared_ptr, or an EMPTY one if the object is gone (`w.expired()` true). The `if (auto locked = w.lock()) { ... }` pattern guards all access.",
+      example: "auto s = std::make_shared<int>(7);\nstd::weak_ptr<int> w = s;   // does NOT bump use_count\nif (auto locked = w.lock()) {\n    // safe: locked is a shared_ptr, *locked == 7\n}   // w.lock() gives an empty shared_ptr if the object is gone",
       section: 20
     },
     {
@@ -694,6 +699,7 @@ window.QUIZZES.cpp = {
       accept: ["std::make_unique", "make_unique", "std::make_unique<T>", "make_unique<T>"],
       answerDisplay: "`std::make_unique`",
       explain: "`std::make_unique<T>(args...)` is exception-safe and less error-prone than raw `new`. (`std::make_shared` is the shared_ptr equivalent, and also allocates the control block in the same allocation as the object.)",
+      example: "auto p   = std::make_unique<int>(42);   // preferred over new\nauto arr = std::make_unique<int[]>(3);  // array form -> delete[]\n// std::make_shared<T>(...) is the shared_ptr equivalent",
       section: 20
     },
     // ---- Section 21
@@ -1041,6 +1047,7 @@ window.QUIZZES.cpp = {
       ],
       answer: 0,
       explain: "`std::optional<T>` holds 0 or 1 value inline (no heap). Use `has_value()`/`(bool)`, `*opt`/`.value()` (throws if empty), and `.value_or(default)` for a safe fallback — no more `-1`/`nullptr` sentinels.",
+      example: "std::optional<int> found = 5;\nstd::optional<int> empty;\nfound.value_or(-1);   // 5\nempty.value_or(-1);   // -1  (no -1/nullptr sentinel needed)\nif (found) { /* *found == 5 */ }",
       section: 27
     },
     {
@@ -1084,6 +1091,7 @@ window.QUIZZES.cpp = {
       ],
       answer: 0,
       explain: "`get_if` takes a POINTER to the variant and returns a pointer result: valid if that type is active, `nullptr` otherwise — perfect for `if (auto* p = std::get_if<std::string>(&v)) { ... }`. `get` returns a reference but throws `bad_variant_access` on mismatch.",
+      example: "std::variant<int, std::string> v = std::string(\"hi\");\nif (auto* p = std::get_if<std::string>(&v)) {\n    // *p == \"hi\"\n}\nstd::get_if<int>(&v);   // nullptr (int isn't active)",
       section: 27
     },
     {
@@ -1167,6 +1175,7 @@ window.QUIZZES.cpp = {
       ],
       answer: 0,
       explain: "`std::expected<T, E>` (C++23) holds either a success `T` or an error `E`, inline and exception-free. Unlike `optional`, which only says something failed, `expected` carries the reason (E) right in the return type, visible to callers.",
+      example: "std::expected<int, std::string> parse(const std::string& s) {\n    if (s == \"42\") return 42;\n    return std::unexpected(\"not a number\");\n}\nparse(\"42\").value_or(-1);   // 42\nparse(\"x\").value_or(-1);    // -1;  .error() == \"not a number\"",
       section: 29
     },
     // ---- Section 30
@@ -1198,6 +1207,7 @@ window.QUIZZES.cpp = {
       ],
       answer: 0,
       explain: "`std::thread` copies its arguments, so a plain `counter` can't bind to `int&` (compile error). `std::ref(counter)` wraps it so the thread really modifies the original.",
+      example: "void increment(int& c) { c += 100; }\n\nint counter = 0;\nstd::thread t(increment, std::ref(counter));\nt.join();\n// counter -> 100  (without std::ref it stays 0)",
       section: 30
     },
     {
@@ -1212,6 +1222,7 @@ window.QUIZZES.cpp = {
       ],
       answer: 0,
       explain: "`std::atomic<int>` makes `counter++` a single hardware-guaranteed atomic operation — ideal for simple counters/flags. A `mutex` + `lock_guard` also works but is heavier; `scoped_lock` is for locking multiple mutexes deadlock-free.",
+      example: "std::atomic<int> n{0};      // safe across threads, no mutex\nn++;                        // atomic read-modify-write\nn += 5;\nn.load();                   // -> 6",
       section: 30
     },
     {
@@ -1226,6 +1237,7 @@ window.QUIZZES.cpp = {
       ],
       answer: 0,
       explain: "`std::thread` discards its function's return value. `std::async(std::launch::async, fn, args...)` returns a `std::future<T>`; `fut.get()` blocks until ready and returns the result — but only once (a second `.get()` throws `std::future_error`).",
+      example: "int slowSquare(int x) { return x * x; }\n\nstd::future<int> fut =\n    std::async(std::launch::async, slowSquare, 12);\n// ... do other work while it runs ...\nint result = fut.get();   // blocks, then -> 144",
       section: 30
     },
     {
@@ -1265,6 +1277,7 @@ window.QUIZZES.cpp = {
       accept: ["std::scoped_lock", "scoped_lock"],
       answerDisplay: "`std::scoped_lock`",
       explain: "`std::scoped_lock(m1, m2, ...)` acquires several mutexes atomically using a deadlock-avoidance algorithm, so two threads requesting them in opposite orders won't deadlock.",
+      example: "std::mutex mA, mB;\n{\n    std::scoped_lock lock(mA, mB);  // lock BOTH, deadlock-safe\n    // ... critical section touching both ...\n}   // both released here (RAII)",
       section: 30
     },
     // ---- Section 31
@@ -1370,6 +1383,7 @@ window.QUIZZES.cpp = {
       ],
       answer: 0,
       explain: "C++14 init-capture creates a NEW closure member from any expression — including a move. Verified: the lambda owns the int (returns 42) and the original ptr is null afterward. `[=]` fails because unique_ptr's copy constructor is deleted (section 20).",
+      example: "auto ptr = std::make_unique<int>(42);\nauto owner = [p = std::move(ptr)]() { return *p; };\nowner();            // 42  (the lambda now owns the int)\n// ptr == nullptr  (true)",
       section: 32
     },
     // ---- Section 33
@@ -1385,6 +1399,7 @@ window.QUIZZES.cpp = {
       ],
       answer: 0,
       explain: "string_view doesn't own or copy anything — it points into someone else's characters. A `const std::string&` parameter forces a temporary allocation when passed a literal; string_view wraps the existing chars directly (verified: same .data() pointer).",
+      example: "void print(std::string_view sv) { std::cout << sv; }\nprint(\"a literal\");                 // no allocation\nstd::string s = \"hello world\";\nprint(s);                           // no copy\nstd::string_view(s).substr(0, 5);   // \"hello\" — O(1), no copy",
       section: 33
     },
     {
@@ -1439,6 +1454,7 @@ window.QUIZZES.cpp = {
       accept: ["static_cast", "static_cast<int>", "std::static_cast"],
       answerDisplay: "`static_cast`",
       explain: "enum class has no implicit int conversion, so both directions are explicit: `static_cast<int>(st)` and `static_cast<Status>(2)` — both verified. That explicitness is the type-safety point.",
+      example: "enum class Status { Idle, Running, Done };\nStatus s = Status::Running;\nint i = static_cast<int>(s);            // 1\nStatus back = static_cast<Status>(2);   // Status::Done",
       section: 34
     },
     {
@@ -1515,6 +1531,7 @@ window.QUIZZES.cpp = {
       ],
       answer: 0,
       explain: "constexpr means CAN run at compile time, not must. Verified both worlds: `std::array<int, factorial(4)>` (24 elements, compile time) and `factorial(runtime_n)` returning 720 at runtime. `consteval` is the compile-time-ONLY variant.",
+      example: "constexpr int factorial(int n) { return n<=1 ? 1 : n*factorial(n-1); }\nconstexpr int f = factorial(5);   // 120, at COMPILE time\nstatic_assert(f == 120);\nint k = 6;\nfactorial(k);                     // 720, at RUNTIME (same fn)",
       section: 36
     },
     {
@@ -1576,6 +1593,7 @@ window.QUIZZES.cpp = {
       ],
       answer: 0,
       explain: "The pipeline reads left to right: keep evens → square → take 3. Verified output: 4 16 36. Views compose with `|` like a shell pipeline, replacing nested iterator-pair calls.",
+      example: "std::vector<int> v{1, 2, 3, 4, 5, 6};\n// nums | views::filter(p)  ==  views::filter(nums, p)\nauto evens = v | std::views::filter([](int n){ return n%2==0; });\nfor (int n : evens) std::cout << n << \" \";   // 2 4 6",
       section: 37
     },
     {
