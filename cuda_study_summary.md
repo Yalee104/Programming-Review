@@ -234,9 +234,20 @@ __global__ void scale(float* x, float f, int n) {
         x[i] *= f;
 }
 
-// N=10 but only <<<2,4>>> = 8 threads: threads 0 and 1 each handle 2 elements
-// x[i] = i initially, f = 2.0
-scale<<<2, 4>>>(dx, 2.0f, 10);
+// host setup: N=10, x[i] = i initially, f = 2.0
+const int N = 10;
+const size_t bytes = N * sizeof(float);
+float hx[N];
+for (int i = 0; i < N; i++) hx[i] = i;
+float* dx;
+cudaMalloc(&dx, bytes);
+cudaMemcpy(dx, hx, bytes, cudaMemcpyHostToDevice);
+
+// only <<<2,4>>> = 8 threads for 10 elements: threads 0 and 1 each handle 2
+scale<<<2, 4>>>(dx, 2.0f, N);
+
+cudaMemcpy(hx, dx, bytes, cudaMemcpyDeviceToHost);   // copy results back into hx
+cudaFree(dx);
 ```
 
 Output after copy-back (verified):
@@ -376,8 +387,17 @@ __global__ void neighborSum(const int* in, int* out, int n) {
     out[i] = left + tile[i] + right;        // phase 2: read neighbors from fast memory
 }
 
-// in = {1, 2, 3, 4, 5, 6, 7, 8}
+// host setup: in = {1, 2, 3, 4, 5, 6, 7, 8}
+int hin[8] = {1, 2, 3, 4, 5, 6, 7, 8}, hout[8];
+int *din, *dout;
+cudaMalloc(&din, 8 * sizeof(int));
+cudaMalloc(&dout, 8 * sizeof(int));
+cudaMemcpy(din, hin, 8 * sizeof(int), cudaMemcpyHostToDevice);
+
 neighborSum<<<1, 8>>>(din, dout, 8);
+
+cudaMemcpy(hout, dout, 8 * sizeof(int), cudaMemcpyDeviceToHost);   // hout holds the result
+cudaFree(din); cudaFree(dout);
 ```
 
 Output (verified):
@@ -423,9 +443,20 @@ __global__ void blockSum(const int* in, int* out) {
     if (t == 0) out[blockIdx.x] = s[0];             // one partial sum per block
 }
 
-// N = 256, in[i] = i, two blocks of 128
+// host setup: N = 256, in[i] = i, two blocks of 128 -> 2 partial sums
+const int N = 256;
+int hin[N], hpartials[2];
+for (int i = 0; i < N; i++) hin[i] = i;
+int *din, *dpartials;
+cudaMalloc(&din, N * sizeof(int));
+cudaMalloc(&dpartials, 2 * sizeof(int));
+cudaMemcpy(din, hin, N * sizeof(int), cudaMemcpyHostToDevice);
+
 blockSum<<<2, 128>>>(din, dpartials);
-// then sum the 2 partials on the CPU (or run a second reduction kernel)
+
+cudaMemcpy(hpartials, dpartials, 2 * sizeof(int), cudaMemcpyDeviceToHost);
+int total = hpartials[0] + hpartials[1];   // final combine on the CPU
+cudaFree(din); cudaFree(dpartials);
 ```
 
 Output (verified):
@@ -498,10 +529,24 @@ __global__ void matAdd(const float* A, const float* B, float* C,
 }
 
 int rows = 2, cols = 3;
+const int n = rows * cols;                             // 6 elements
+const size_t bytes = n * sizeof(float);
+
+// host setup: A = {0,1,2,3,4,5} (row-major 2x3), B all 100s
+float hA[n] = {0, 1, 2, 3, 4, 5}, hB[n], hC[n];
+for (int i = 0; i < n; i++) hB[i] = 100.0f;
+float *dA, *dB, *dC;
+cudaMalloc(&dA, bytes); cudaMalloc(&dB, bytes); cudaMalloc(&dC, bytes);
+cudaMemcpy(dA, hA, bytes, cudaMemcpyHostToDevice);
+cudaMemcpy(dB, hB, bytes, cudaMemcpyHostToDevice);
+
 dim3 block(16, 16);                                    // 256 threads per block
 dim3 grid((cols + block.x - 1) / block.x,              // ceiling division per axis
           (rows + block.y - 1) / block.y);             // = grid(1, 1) here
 matAdd<<<grid, block>>>(dA, dB, dC, rows, cols);
+
+cudaMemcpy(hC, dC, bytes, cudaMemcpyDeviceToHost);     // hC holds the result matrix
+cudaFree(dA); cudaFree(dB); cudaFree(dC);
 ```
 
 With `A = {0,1,2,3,4,5}` (row-major 2×3) and `B` all 100s, output (verified):
