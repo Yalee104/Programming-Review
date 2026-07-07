@@ -41,3 +41,20 @@ in topic-specific markdown files for quick review.
    verifying (rule 3), compile/run the FULL snippet exactly as written, not
    a mentally completed version — if it only compiles because you silently
    added a declaration in the sandbox, the summary is incomplete.
+
+7. **Explain comprehensively — never assume the reader already knows a
+   concept, operator, or piece of syntax.** Introduce each new thing before
+   using it, and build up step by step from the ground:
+   - First say WHAT it is in plain language (e.g. "a *view* is a
+     lightweight, non-owning, lazy object over another range").
+   - Then explain any unfamiliar SYNTAX explicitly — especially operators
+     and symbols used in a non-obvious way. Don't drop `nums | views::filter(...)`
+     on the reader; explain that `|` here feeds the left range into the right
+     adaptor, and that `R | views::filter(p)` is exactly `views::filter(R, p)`.
+   - Then show it in the SMALLEST possible form (a single stage/one feature),
+     and only after that build up to the combined/chained/advanced form.
+   - For multi-step pipelines or transformations, show the intermediate
+     result at EACH step (what the value is after stage 1, stage 2, …), not
+     just the final answer.
+   If a reader would have to already understand something to follow the
+   example, that something must be explained first. When in doubt, over-explain.
