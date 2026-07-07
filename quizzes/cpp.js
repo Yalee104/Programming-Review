@@ -113,6 +113,35 @@ window.QUIZZES.cpp = {
       explain: "They are identical except for default access (and default inheritance access). `struct` defaults to public, `class` defaults to private — everything else (constructors, methods, inheritance, virtual) is the same.",
       section: 3
     },
+    {
+      type: "mc",
+      level: "intermediate",
+      q: "Why does `Multiplier times3{3};` work with no constructor defined?",
+      code: "struct Multiplier {\n    int factor;\n    int operator()(int v) const { return v * factor; }\n};\nMultiplier times3{3};",
+      choices: [
+        "Multiplier is an aggregate, so `{3}` initializes its members directly (factor = 3) — no constructor needed",
+        "The compiler generates a constructor taking one int",
+        "operator() acts as the constructor",
+        "It doesn't compile without a constructor"
+      ],
+      answer: 0,
+      explain: "An aggregate (no user-declared/inherited ctors, no private/protected data members, no virtual functions/bases) can be brace-initialized member by member. A method like operator() does NOT disqualify it — only data members and constructors matter. Verified: times3(7) == 21.",
+      section: 3
+    },
+    {
+      type: "mc",
+      level: "advanced",
+      q: "What is `p` after `struct Point { int x; int y; }; Point p{7};`?",
+      choices: [
+        "`p.x == 7, p.y == 0` — supplying fewer initializers value-initializes the rest (zeroes them)",
+        "`p.x == 7, p.y == 7` — the value is copied to all members",
+        "A compile error — you must initialize every member",
+        "`p.x == 7, p.y` is uninitialized garbage"
+      ],
+      answer: 0,
+      explain: "Aggregate init fills members in order; omitted ones are value-initialized (zeroed), so p.y is a well-defined 0 (verified). `Point{}` zeroes everything; C++20 designated initializers (`Point{.y = 8}`) name members explicitly. Note: adding a user-declared constructor or a private data member would make brace init call a constructor instead (or fail).",
+      section: 3
+    },
     // ---- Section 4
     {
       type: "mc",
