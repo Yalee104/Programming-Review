@@ -31,3 +31,13 @@ in topic-specific markdown files for quick review.
 
 5. Append new sections to the relevant existing file rather than starting
    over — keep numbering sequential within each file.
+
+6. **Examples must be COMPLETE and self-contained — never skip
+   initialization.** Every variable or object used in a usage snippet must
+   first be created in that same snippet: show `Multiplier times3{3};`
+   before calling `times3(7)`, `Widget w; Widget* wp = &w;` before
+   `(w.*mfp)()` / `(wp->*mfp)()`, etc. A reader should be able to copy the
+   example and run it without inventing any missing declarations. When
+   verifying (rule 3), compile/run the FULL snippet exactly as written, not
+   a mentally completed version — if it only compiles because you silently
+   added a declaration in the sandbox, the summary is incomplete.
