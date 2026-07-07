@@ -527,6 +527,56 @@ window.QUIZZES.cuda = {
       distractors: ["<=","=","++","__threadfence"],
       explain: "Threads below `stride` add their partner from the upper half (s[t] += s[t+stride]); __syncthreads() sits OUTSIDE the if so every thread in the block reaches the barrier each step."
     }
+,
+    // ---- Advanced code-assembly (multi-topic) ----
+    {
+      type: "assemble", level: "advanced", section: 10,
+      q: "Complete a shared-memory tiled kernel: index, load, barrier, then read neighbors safely.",
+      template: "__global__ void neighborSum(const int* in, int* out, int n) {\n    __shared__ int tile[256];\n    int i = {#}.x * blockDim.x + {#}.x;    // unique global index\n    if (i < n) tile[threadIdx.x] = in[i];  // phase 1: everyone loads\n    {#}();                                  // barrier before any reads\n    if (i < n) {\n        int t = threadIdx.x;\n        int L = (t == 0)              ? 0 : tile[t-1];\n        int R = (t == blockDim.x - 1) ? 0 : tile[t+1];\n        out[i] = L + tile[t] {#} R;         // sum of the 3 neighbors\n    }\n}\n// in = {1..8}, one block of 8  ->  out = 3 6 9 12 15 18 21 15",
+      blanks: ["blockIdx","threadIdx","__syncthreads","+"],
+      distractors: ["gridDim","blockDim","__threadfence","-"],
+      explain: "The global index is blockIdx.x * blockDim.x + threadIdx.x. After every thread writes its tile slot, __syncthreads() is the barrier that guarantees all writes finish before any thread reads a neighbor's slot — skip it and you read garbage."
+    },
+    {
+      type: "assemble", level: "advanced", section: 11,
+      q: "Complete the tree-reduction kernel that sums a block of 128 values in log2(128) steps.",
+      template: "__global__ void blockSum(const int* in, int* out) {\n    __shared__ int s[128];\n    int t = threadIdx.x;\n    s[t] = in[{#}.x * blockDim.x + t];      // load one element per thread\n    __syncthreads();\n    for (int stride = blockDim.x / 2; stride {#} 0; stride {#} 1) {\n        if (t < stride)\n            s[t] {#} s[t + stride];         // add partner from the upper half\n        __syncthreads();                    // OUTSIDE the if\n    }\n    if (t == 0) out[blockIdx.x] = s[{#}];    // one partial sum per block\n}\n// N=256, in[i]=i, 2 blocks of 128  ->  partials 8128 and 24512",
+      blanks: ["blockIdx",">",">>=","+=","0"],
+      distractors: ["threadIdx",">=","<<=","=","t"],
+      explain: "Each block sums its slice: load with blockIdx.x*blockDim.x + t, then halve the active range each step — stride > 0 and stride >>= 1 — adding s[t] += s[t+stride]. __syncthreads() sits outside the if so all threads reach it. Thread 0 writes s[0], the block's partial sum."
+    },
+    {
+      type: "assemble", level: "advanced", section: 6,
+      q: "Complete the grid-stride scale kernel AND its ceiling-division launch.",
+      template: "__global__ void scale(float* x, float f, int n) {\n    int stride = blockDim.x {#} gridDim.x;   // total threads in the grid\n    for (int i = blockIdx.x*blockDim.x + threadIdx.x; i < n; i {#} stride)\n        x[i] {#} f;                           // scale in place\n}\n// host launch:\nint threads = 256;\nint blocks = (n {#} threads - 1) / threads;  // ceiling division\nscale{#}blocks, threads{#}(dx, 2.0f, n);\n// x[i]=i, n=10, <<<2,4>>>  ->  0 2 4 6 8 10 12 14 16 18",
+      blanks: ["*","+=","*=","+","<<<",">>>"],
+      distractors: ["/","++","=","-","<<",">>"],
+      explain: "Total threads = blockDim.x * gridDim.x; each thread strides by that (i += stride) so any n is covered. x[i] *= f scales in place. The launch uses ceiling division (n + threads - 1) / threads and the triple-angle <<<blocks, threads>>> configuration."
+    },
+    {
+      type: "assemble", level: "advanced", section: 13,
+      q: "Complete the 2D matrix-add kernel (row/col from y/x) and its dim3 launch.",
+      template: "__global__ void matAdd(const float* A, const float* B, float* C, int rows, int cols) {\n    int col = blockIdx.x*blockDim.x + threadIdx.x;   // x -> columns\n    int row = blockIdx.{#}*blockDim.y + threadIdx.y; // y -> rows\n    if (row < rows {#} col < cols) {                 // bounds-check BOTH\n        int i = row {#} cols + col;                  // 2D coords -> flat row-major\n        C[i] = A[i] + B[i];\n    }\n}\n// host:\n{#} block(16, 16);\ndim3 grid((cols + block.x - 1) / block.x,\n          (rows + block.y - 1) / block.y);\nmatAdd<<<grid, block>>>(dA, dB, dC, rows, cols);",
+      blanks: ["y","&&","*","dim3"],
+      distractors: ["x","z","||","+","int"],
+      explain: "x maps to columns, y to rows: row = blockIdx.y*blockDim.y + threadIdx.y. Guard BOTH axes with &&. Row-major flattening is row * cols + col. The launch bundles 2D dimensions with dim3 block(16,16) and a matching ceiling-division grid."
+    },
+    {
+      type: "assemble", level: "advanced", section: 7,
+      q: "Wrap the standard workflow in the CUDA_CHECK macro: allocate, copy up, launch, and catch errors.",
+      template: "#define CUDA_CHECK(call) do {                                  \\\n    cudaError_t e = (call);                                    \\\n    if (e != cudaSuccess) {                                    \\\n        fprintf(stderr, \"%s\\n\", cudaGetErrorString(e));        \\\n        exit(1); }                                             \\\n} while (0)\n\nCUDA_CHECK(cuda{#}(&da, bytes));                       // allocate device memory\nCUDA_CHECK(cudaMemcpy(da, ha, bytes, cudaMemcpy{#}));  // copy input up\nvecAdd<<<blocks, threads>>>(da, db, dc, n);\nCUDA_CHECK(cudaGet{#}());                              // catch a bad launch config\nCUDA_CHECK(cuda{#}());                                 // catch errors DURING execution",
+      blanks: ["Malloc","HostToDevice","LastError","DeviceSynchronize"],
+      distractors: ["Free","DeviceToHost","PeekAtLastError","StreamSynchronize"],
+      explain: "cudaMalloc reserves device memory; cudaMemcpy with cudaMemcpyHostToDevice copies input up. A launch returns nothing, so cudaGetLastError() catches a bad configuration and cudaDeviceSynchronize() catches errors that happen during execution — both wrapped in CUDA_CHECK."
+    },
+    {
+      type: "assemble", level: "advanced", section: 12,
+      q: "Use unified memory: one allocation for CPU+GPU, sync before reading, then free.",
+      template: "float *a, *b, *c;\ncuda{#}(&a, N * sizeof(float));    // ONE pointer, visible on CPU and GPU\ncudaMallocManaged(&b, N * sizeof(float));\ncudaMallocManaged(&c, N * sizeof(float));\n// ... CPU fills a and b directly, NO cudaMemcpy ...\nvecAdd<<<blocks, threads>>>(a, b, c, N);\ncuda{#}();                         // REQUIRED before the CPU reads c\nfor (int i = 0; i < N; i++) sum += c[i];\ncuda{#}(a);                        // release",
+      blanks: ["MallocManaged","DeviceSynchronize","Free"],
+      distractors: ["Malloc","Memcpy","StreamSynchronize","FreeHost"],
+      explain: "cudaMallocManaged gives one pointer the driver migrates between CPU and GPU, so no cudaMemcpy is needed. But the kernel is still async — you MUST cudaDeviceSynchronize() before the CPU reads c. cudaFree releases managed memory too."
+    }
 
   ]
 };
