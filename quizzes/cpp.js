@@ -1724,6 +1724,88 @@ window.QUIZZES.cpp = {
       distractors: ["copy","forward","ref"],
       explain: "std::move is just a cast to an rvalue reference; it lets vector's move constructor steal a's internal buffer into b, leaving a empty (size 0). std::move itself moves nothing."
     }
+,
+    // ---- Advanced code-assembly (multi-topic) ----
+    {
+      type: "assemble", level: "advanced", section: 26,
+      q: "Polymorphism through a vector of unique_ptr: mark the override, build the Circle, and dispatch through the pointer.",
+      template: "struct Shape {\n    virtual double area() const = 0;   // pure virtual\n    virtual ~Shape() = default;\n};\nstruct Circle : Shape {\n    double r;\n    Circle(double r_) : r(r_) {}\n    double area() const {#} { return 3.14159 * r * r; }\n};\n\nstd::vector<std::unique_ptr<Shape>> shapes;\nshapes.push_back(std::{#}<Circle>(2.0));\ndouble total = 0;\nfor (const auto& s : shapes)\n    total += s{#}area();     // virtual call THROUGH the pointer\n// total == 12.5664",
+      blanks: ["override","make_unique","->"],
+      distractors: ["virtual","make_shared","."],
+      explain: "area() marked override is the derived version; make_unique<Circle> stores a Circle inside a unique_ptr<Shape>; s->area() makes the virtual call through the pointer (12.5664). make_shared wouldn't fit the unique_ptr vector, and s.area() fails because unique_ptr itself has no area()."
+    },
+    {
+      type: "assemble", level: "advanced", section: 30,
+      q: "Run a task that owns a moved-in unique_ptr on another thread and collect its result. (One token is used twice.)",
+      template: "auto data = std::make_unique<int>(21);\nstd::future<int> fut = std::{#}(std::launch::{#},\n    [p = std::{#}(data)]() { return *p * 2; });   // move the unique_ptr INTO the closure\nint result = fut.{#}();    // blocks, then 42",
+      blanks: ["async","async","move","get"],
+      distractors: ["thread","sync","forward","wait"],
+      explain: "std::async launches the lambda with std::launch::async (forced concurrency) and returns a future<int>. The init-capture [p = std::move(data)] MOVES the non-copyable unique_ptr into the closure. fut.get() blocks and returns 42. std::thread returns no value; 'sync' isn't a launch policy (async/deferred are)."
+    },
+    {
+      type: "assemble", level: "advanced", section: 28,
+      q: "Build the `overloaded` helper and use std::visit to dispatch on a variant's active alternative.",
+      template: "template<class... Ts> struct overloaded : Ts... { using Ts::{#}...; };\ntemplate<class... Ts> overloaded(Ts...) -> {#}<Ts...>;   // deduction guide\n\nstd::variant<int, double, std::string> v = 3.14;\nstd::{#}(overloaded{\n    [](int i)                { std::cout << \"int \" << i; },\n    [](double d)             { std::cout << \"double \" << d; },\n    [](const std::string& s) { std::cout << \"str \" << s; }\n}, v);\n// prints: double 3.14",
+      blanks: ["operator()","overloaded","visit"],
+      distractors: ["operator","variant","get","apply"],
+      explain: "using Ts::operator()... merges every lambda's call operator into one overload set; the deduction guide -> overloaded<Ts...> lets overloaded{...} deduce its template types. std::visit then calls the lambda matching the active alternative (double 3.14)."
+    },
+    {
+      type: "assemble", level: "advanced", section: 10,
+      q: "Complete the move constructor and move assignment of a resource-owning class (Rule of 5).",
+      template: "class Buffer {\n    int* data_; size_t n_;\npublic:\n    Buffer(size_t n) : data_(new int[n]{}), n_(n) {}\n    ~Buffer() { delete[] data_; }\n\n    Buffer(Buffer&& o) {#} : data_(o.data_), n_(o.n_) {   // move constructor\n        o.data_ = {#};          // leave the source safe to destroy\n        o.n_ = 0;\n    }\n    Buffer& operator=(Buffer&& o) noexcept {\n        if (this {#} &o) {                    // guard self-assignment\n            delete[] data_;\n            data_ = o.data_; n_ = o.n_;\n            o.data_ = nullptr; o.n_ = 0;\n        }\n        return {#};\n    }\n};",
+      blanks: ["noexcept","nullptr","!=","*this"],
+      distractors: ["const","delete","==","this"],
+      explain: "Move ops are marked noexcept so STL containers use them on reallocation. The move ctor steals the pointer and nulls the source (nullptr) so its destructor's delete[] is harmless. Move assignment guards `this != &o` against self-move, then returns *this — `this` alone would return a pointer, not a Buffer&."
+    },
+    {
+      type: "assemble", level: "advanced", section: 37,
+      q: "Define a `concept` and use a requires-clause to constrain a generic sum function.",
+      template: "template <typename T>\n{#} Numeric = std::is_arithmetic_v<T>;   // a named constraint\n\ntemplate <typename T>\n{#} (Numeric<T>)                          // constrain T\nT total(const std::vector<T>& v) {\n    return std::{#}(v.begin(), v.end(), T{});\n}\n// total(std::vector<int>{1, 2, 3}) == 6",
+      blanks: ["concept","requires","accumulate"],
+      distractors: ["constexpr","typename","transform","count"],
+      explain: "concept Numeric = is_arithmetic_v<T> names a compile-time constraint; the requires (Numeric<T>) clause rejects non-numeric T right at the call site with a readable error. std::accumulate folds [begin, end) from T{} (0) -> 6."
+    },
+    {
+      type: "assemble", level: "advanced", section: 30,
+      q: "Wire up a condition-variable handoff: the consumer sleeps until the producer signals.",
+      template: "std::mutex m;\nstd::condition_variable cv;\nstd::queue<int> q;\nbool ready = false;\n\n// consumer:\nstd::{#}<std::mutex> lk(m);       // cv.wait needs THIS lock type\ncv.{#}(lk, []{ return ready; });  // release lock & sleep until the predicate is true\nint val = q.front(); q.pop();\n\n// producer (another thread):\n{ std::lock_guard<std::mutex> g(m); q.push(42); ready = true; }\ncv.{#}();     // wake one waiter",
+      blanks: ["unique_lock","wait","notify_one"],
+      distractors: ["lock_guard","scoped_lock","wait_for","signal"],
+      explain: "cv.wait must unlock and relock the mutex while sleeping, so it needs a std::unique_lock — a lock_guard/scoped_lock won't compile there. wait(lock, predicate) sleeps until the predicate holds (also guards spurious wakeups). notify_one() wakes one waiter after the push. wait_for needs a timeout; 'signal' isn't a member."
+    },
+    {
+      type: "assemble", level: "advanced", section: 29,
+      q: "Chain a parse through std::expected's monadic operations (transform then and_then).",
+      template: "std::expected<int, std::string> parse(const std::string& s) {\n    if (s == \"42\") return 42;\n    return std::{#}(std::string(\"NaN\"));    // build the ERROR value\n}\n\nauto r = parse(\"42\")\n    .{#}([](int n) { return n + 8; })        // n stays an int -> 50, still success\n    .{#}([](int n) -> std::expected<int, std::string> {\n        if (n >= 50) return n;\n        return std::unexpected(std::string(\"small\"));\n    });                                       // continue only if still successful\n// r.value() == 50",
+      blanks: ["unexpected","transform","and_then"],
+      distractors: ["expected","map","or_else","value_or"],
+      explain: "std::unexpected wraps the error branch. transform maps the success value (int -> int) and re-wraps it automatically; and_then takes a function that ITSELF returns an expected, so it goes where the lambda returns expected<int,string>. Swap the two and the types no longer line up. or_else handles the error branch instead."
+    },
+    {
+      type: "assemble", level: "advanced", section: 30,
+      q: "Sum 0..99 across four threads accumulating into an atomic.",
+      template: "std::atomic<long> total{0};\nstd::vector<std::thread> workers;\nfor (int t = 0; t < 4; ++t)\n    workers.{#}([&total, t] {                 // build the thread IN PLACE from the lambda\n        for (int i = t; i < 100; i += 4)\n            total {#} i;                       // safe concurrent accumulate\n    });\nfor (auto& w : workers) w.{#}();               // wait for all four\n// total == 4950",
+      blanks: ["emplace_back","+=","join"],
+      distractors: ["push_back","+","=","detach"],
+      explain: "emplace_back constructs the std::thread in place from the lambda (push_back needs an already-built thread — a lambda won't implicitly convert). total += i is an atomic read-modify-write, so no data race (total + i discards the result; = would race). join() waits for each thread before total is read (4950); detach would race with that read."
+    },
+    {
+      type: "assemble", level: "advanced", section: 14,
+      q: "Copy a map's entries into a vector and sort them by value (highest first), then print via structured bindings.",
+      template: "std::map<std::string, int> scores{{\"amy\", 3}, {\"bob\", 5}, {\"cid\", 1}};\nstd::vector<std::pair<std::string, int>> v(scores.{#}(), scores.end());   // copy entries out\n\nstd::{#}(v.begin(), v.end(),\n    [](const auto& a, const auto& b) { return a.second {#} b.second; });   // by score, DESCENDING\n\nfor (const auto{#} [name, score] : v)\n    std::cout << name << score;    // bob5amy3cid1",
+      blanks: ["begin","sort",">","&"],
+      distractors: ["data","for_each","<","&&"],
+      explain: "v(scores.begin(), scores.end()) range-constructs the vector of pairs. std::sort with a comparator returning a.second > b.second orders descending (< would be ascending). const auto& [name, score] binds each pair by reference — const auto&& can't bind these lvalue elements."
+    },
+    {
+      type: "assemble", level: "advanced", section: 13,
+      q: "Write a variadic factory that perfectly forwards its arguments to construct a T in a unique_ptr. (One token is used twice.)",
+      template: "template <typename T, typename{#} Args>          // Args is a parameter PACK\nstd::{#}<T> create(Args&&... args) {\n    return std::make_unique<T>(std::{#}<Args>(args){#});   // perfect-forward & expand\n}\n\nstruct Point { int x, y; Point(int a, int b) : x(a), y(b) {} };\nauto p = create<Point>(3, 4);\n// p->x == 3, p->y == 4",
+      blanks: ["...","unique_ptr","forward","..."],
+      distractors: ["&","weak_ptr","copy",";"],
+      explain: "typename... Args declares a parameter pack; std::forward<Args>(args)... forwards each argument preserving its value category, and the trailing ... expands the pack. make_unique<T> returns a unique_ptr<T>, so that's the return type. weak_ptr can't own the object; copy/move would break perfect forwarding."
+    }
 
   ]
 };
