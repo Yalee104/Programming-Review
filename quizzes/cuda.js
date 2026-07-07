@@ -477,6 +477,56 @@ window.QUIZZES.cuda = {
       explain: "Same guard idiom as 1D, applied per axis: ceiling division rounds the grid up (`dim3 grid((cols+15)/16, (rows+15)/16)`), so most threads in a tiny matrix fall outside the bounds and must be masked off. Verified example: C = A + 100 for the 2×3 case.",
       example: "dim3 block(16, 16);                             // 256 threads per block\ndim3 grid((cols + block.x - 1) / block.x,       // ceiling division per axis\n          (rows + block.y - 1) / block.y);\nmatAdd<<<grid, block>>>(dA, dB, dC, rows, cols);\n// for a 2x3 matrix most of the 256 threads are masked by the bounds check",
       section: 13
+    },
+    // ---- Code-assembly questions ----
+    {
+      type: "assemble", level: "beginner", section: 4,
+      q: "Compute a thread's unique global index across the grid.",
+      template: "int idx = {#}.x * {#}.x + {#}.x;",
+      blanks: ["blockIdx","blockDim","threadIdx"],
+      distractors: ["gridDim","warpSize"],
+      explain: "block index x block width + position within the block = a unique global index. `blockIdx.x * blockDim.x + threadIdx.x` is the single most important line in CUDA."
+    },
+    {
+      type: "assemble", level: "beginner", section: 2,
+      q: "Launch a kernel over blocks x threads, then wait for the GPU.",
+      template: "vecAdd{#}blocks, threads{#}(da, db, dc, n);\ncudaDeviceSynchronize();   // launches are async",
+      blanks: ["<<<",">>>"],
+      distractors: ["<<",">>","[[","]]"],
+      explain: "The triple-angle `<<<blocks, threads>>>` is the mandatory kernel launch configuration. cudaDeviceSynchronize() waits for the asynchronous kernel to finish."
+    },
+    {
+      type: "assemble", level: "intermediate", section: 5,
+      q: "Compute the block count so every one of n elements gets a thread.",
+      template: "int threads = 256;\nint blocks = (n {#} threads - 1) {#} threads;   // ceiling division\nvecAdd<<<blocks, threads>>>(da, db, dc, n);",
+      blanks: ["+","/"],
+      distractors: ["-","*","%"],
+      explain: "(n + threads - 1) / threads is ceiling division — it rounds the block count UP so no elements are left unprocessed. Pair it with an `if (i < n)` guard for the leftover threads."
+    },
+    {
+      type: "assemble", level: "intermediate", section: 5,
+      q: "Allocate device memory and copy the host array to it.",
+      template: "cuda{#}(&d, bytes);\ncuda{#}(d, h, bytes, cudaMemcpy{#});",
+      blanks: ["Malloc","Memcpy","HostToDevice"],
+      distractors: ["Free","MemcpyAsync","DeviceToHost","Managed"],
+      explain: "cudaMalloc reserves device memory; cudaMemcpy with cudaMemcpyHostToDevice copies the host buffer into it. The reverse copy after the kernel uses cudaMemcpyDeviceToHost."
+    },
+    {
+      type: "assemble", level: "advanced", section: 6,
+      q: "Stride across any n using the total thread count.",
+      template: "int stride = blockDim.x {#} gridDim.x;   // total threads in the grid\nfor (int i = blockIdx.x*blockDim.x + threadIdx.x; i {#} n; i {#} stride)\n    x[i] *= f;",
+      blanks: ["*","<","+="],
+      distractors: ["+","<=","++","-="],
+      explain: "Total threads = blockDim.x * gridDim.x. Each thread starts at its global index and hops by that stride until i >= n, so any n is covered regardless of launch size."
+    },
+    {
+      type: "assemble", level: "advanced", section: 11,
+      q: "One tree-reduction step: add the upper half into the lower, then sync.",
+      template: "if (t {#} stride)\n    s[t] {#} s[t + stride];\n{#}();   // barrier — ALL threads must reach it",
+      blanks: ["<","+=","__syncthreads"],
+      distractors: ["<=","=","++","__threadfence"],
+      explain: "Threads below `stride` add their partner from the upper half (s[t] += s[t+stride]); __syncthreads() sits OUTSIDE the if so every thread in the block reaches the barrier each step."
     }
+
   ]
 };

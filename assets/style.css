@@ -390,6 +390,71 @@ p.page-sub { color: var(--muted); margin: 0 4px 20px; font-size: 15px; }
 }
 .miss-level { margin: 4px 0 8px; }
 
+/* Code-assembly question — blanks + token bank */
+.assemble-code {
+  background: var(--code-bg);
+  color: var(--code-text);
+  padding: 12px 14px;
+  border-radius: 10px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.9;
+  margin: 10px 0;
+  -webkit-overflow-scrolling: touch;
+}
+.assemble-code code { background: none; padding: 0; color: inherit; }
+.blank {
+  display: inline-block;
+  min-width: 46px;
+  min-height: 22px;
+  padding: 1px 8px;
+  margin: 0 1px;
+  vertical-align: baseline;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  color: var(--code-text);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1.5px dashed #64748b;
+  border-radius: 6px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.blank.filled { border-style: solid; border-color: var(--accent); background: rgba(96, 165, 250, 0.18); }
+.blank.ok { border-style: solid; border-color: var(--good); background: rgba(74, 222, 128, 0.18); }
+.blank.bad { border-style: solid; border-color: var(--bad); background: rgba(248, 113, 113, 0.2); }
+.blank:disabled { cursor: default; }
+
+.assemble-hint { font-size: 13px; color: var(--muted); margin: 4px 0 8px; }
+.token-bank { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
+.token {
+  padding: 9px 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1.5px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.token:active { transform: scale(0.96); }
+.token.used { opacity: 0.35; pointer-events: none; text-decoration: line-through; }
+.token:disabled { cursor: default; }
+
+/* assembled-code answer blocks in feedback + recap */
+.answer-code {
+  background: var(--code-bg);
+  color: var(--code-text);
+  padding: 10px 12px;
+  border-radius: 8px;
+  overflow-x: auto;
+  font-size: 12.5px;
+  line-height: 1.5;
+  margin: 6px 0 0;
+  -webkit-overflow-scrolling: touch;
+}
+.answer-code code { background: none; padding: 0; color: inherit; }
+
 /* Quiz start screen — question-count slider */
 .start-card .q-text { margin-bottom: 4px; }
 .slider-row { padding: 14px 2px 4px; }
