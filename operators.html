@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Neural-Net Operators — Programming Review</title>
+  <link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+  <div class="topbar">
+    <a class="back" href="index.html">‹ Home</a>
+    <div class="title">Neural-Net Operators</div>
+    <a class="back" href="review.html?lang=nnops">Summary ›</a>
+  </div>
+
+  <div class="wrap">
+    <p class="page-sub" style="margin-top:14px">
+      The core operators behind CNNs and transformers — each with an animation of how it works and an
+      efficient, <strong>branch-free</strong> C++ kernel. The code style reflects
+      <a href="https://quadric.io/" target="_blank" rel="noopener">Quadric</a>'s Chimera GPNPU: one
+      unified programmable core runs matrix, vector, and scalar work in a single instruction stream
+      across a wide PE grid, so operators are written as fused data-parallel loops with
+      <em>no data-dependent branches</em> (activations use <code>max/min/select</code>; boundaries use
+      lane-position masks), and quantized <code>int8×int8→int32</code> MACs with a requantize step.
+      Every C++ snippet was compiled and run before it was pasted here.
+    </p>
+
+    <nav class="op-toc" id="op-toc" aria-label="Operators"></nav>
+
+    <div id="op-list"></div>
+
+    <p class="footer-note">Interview prep · animations are canvas-drawn, dependency-free · C++ verified with g++ 13.</p>
+  </div>
+
+  <script src="assets/operators.js"></script>
+</body>
+</html>

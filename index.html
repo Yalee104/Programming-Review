@@ -31,18 +31,35 @@
       var actions = document.createElement("div");
       actions.className = "actions";
 
-      var review = document.createElement("a");
-      review.className = "btn";
-      review.href = "review.html?lang=" + lang.id;
-      review.textContent = "📖 Review";
+      if (lang.interactive) {
+        // Interactive/animated topic (e.g. NN operators): Animations + Summary.
+        var anim = document.createElement("a");
+        anim.className = "btn primary";
+        anim.href = lang.interactive;
+        anim.textContent = "🎬 Animations";
 
-      var quiz = document.createElement("a");
-      quiz.className = "btn primary" + (lang.quiz ? "" : " disabled");
-      quiz.href = lang.quiz ? "quiz.html?lang=" + lang.id : "#";
-      quiz.textContent = lang.quiz ? "📝 Quiz" : "Quiz coming soon";
+        var summary = document.createElement("a");
+        summary.className = "btn";
+        summary.href = "review.html?lang=" + lang.id;
+        summary.textContent = "📖 Summary";
 
-      actions.appendChild(review);
-      actions.appendChild(quiz);
+        actions.appendChild(anim);
+        actions.appendChild(summary);
+      } else {
+        var review = document.createElement("a");
+        review.className = "btn";
+        review.href = "review.html?lang=" + lang.id;
+        review.textContent = "📖 Review";
+
+        var quiz = document.createElement("a");
+        quiz.className = "btn primary" + (lang.quiz ? "" : " disabled");
+        quiz.href = lang.quiz ? "quiz.html?lang=" + lang.id : "#";
+        quiz.textContent = lang.quiz ? "📝 Quiz" : "Quiz coming soon";
+
+        actions.appendChild(review);
+        actions.appendChild(quiz);
+      }
+
       card.appendChild(h);
       card.appendChild(p);
       card.appendChild(actions);
