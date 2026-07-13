@@ -22,6 +22,14 @@ window.LANGUAGES = [
     md: "cuda_study_summary.md",
     quiz: true,
   },
+  {
+    id: "nnops",
+    name: "Neural-Net Operators",
+    desc: "Conv2D, ReLU/GELU/Sigmoid, Softmax, depthwise-separable conv, BatchNorm/LayerNorm, GEMM & attention — animated, with branch-free SIMD C++ in Quadric's Chimera style.",
+    md: "nn_operators_summary.md",
+    quiz: false,
+    interactive: "operators.html",
+  },
 ];
 
 window.getLanguage = function (id) {
