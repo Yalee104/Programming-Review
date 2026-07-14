@@ -624,5 +624,373 @@ parameters and the MACs live) and **light glue** (activations, pooling,
 norm, plumbing) that conditions, gates, reshapes, and routes the signal
 between them. Reading an ONNX graph is reading that pipeline.
 
-**Next: Step 1** — pick a small real CNN (a MNIST-class model with ~8-10
-nodes) and start dissecting it with actual tools.
+---
+
+## Step 1 — The model: MNIST-12 from the ONNX Model Zoo
+
+**The pick:** `mnist-12.onnx` from the official ONNX Model Zoo
+(`github.com/onnx/models`). It reads a **28×28 grayscale image of a
+handwritten digit** and outputs **10 scores**, one per digit 0–9 — the
+"hello world" task of computer vision, so all attention can go to the
+*graph*, not the application.
+
+**Why it's the right first dissection target:**
+
+1. **The whole graph fits in your head** — exactly 12 nodes (verified
+   below). A ResNet has ~120, a YOLO ~300; this one you can hold complete.
+2. **It's a Step 0 reunion, with nothing new.** The graph contains Conv,
+   ReLU, MaxPool, Reshape, MatMul and Add — almost every operator family
+   from the primer and not one operator we haven't covered.
+3. **It's the canonical CNN shape** you'll meet scaled-up everywhere:
+   [Conv → ReLU → Pool] repeated, then flatten, then a Linear classifier.
+   ResNet, MobileNet etc. are this same skeleton with more floors.
+4. **Static input shape** (exactly 1×1×28×28, no "dynamic batch" wildcards),
+   so Step 4's shape inference produces clean concrete numbers everywhere.
+5. **Tiny** — 26 KB. The file is committed in this repo at
+   `models/mnist-12.onnx`, so everything below is reproducible offline.
+
+To re-download it yourself:
+
+```bash
+curl -L -o models/mnist-12.onnx "https://media.githubusercontent.com/media/onnx/models/main/validated/vision/classification/mnist/model/mnist-12.onnx"
+```
+
+⚠️ **Git-LFS gotcha** (classic time-waster): the "normal" GitHub raw URL
+(`github.com/onnx/models/raw/main/...`) returns a **130-byte text file**,
+not the model — the Model Zoo stores models in Git LFS, and the raw URL
+serves the LFS *pointer*. If `onnx.load` ever fails with a parse error on a
+suspiciously tiny file, you downloaded a pointer. The
+`media.githubusercontent.com/media/...` form above fetches the real bytes.
+
+---
+
+## Step 2 — Tools to install
+
+One line, three packages:
+
+```bash
+pip install onnx onnxruntime netron
+```
+
+| Package | What it is | Role in this exercise |
+|---|---|---|
+| `onnx` | The format's official Python library: load a `.onnx` file into Python objects, walk the graph, run checkers and shape inference | Steps 3–5: all our inspection code |
+| `onnxruntime` | Microsoft's engine that actually *executes* ONNX models on CPU/GPU | Step 4: run the model for real and cross-check what static analysis predicted |
+| `netron` | Graph **visualizer** — the tool everyone in this industry has open all day. `netron models/mnist-12.onnx` starts a local server and renders the graph in your browser; click any node to see its attributes and weight shapes | Visual companion to Steps 3–4 |
+
+Zero-install alternative for Netron: open **https://netron.app** in a
+browser and drop the `.onnx` file onto the page — same viewer, nothing to
+install. Recommended first stop: look at the picture of the graph *before*
+reading it with code, the same way you'd skim a repo's folder structure
+before reading source.
+
+Versions used to verify everything below (any recent versions are fine):
+Python 3.11, `onnx` 1.22.0, `onnxruntime` 1.27.0, `numpy` 2.4.6.
+All snippets assume you run them **from this repo's root folder** (so the
+relative path `models/mnist-12.onnx` resolves).
+
+---
+
+## Step 3 — Load the model and list every node
+
+### 3.1 The ONNX data model, in codebase terms
+
+Before reading the listing, here's the "schema" of an ONNX file. A `.onnx`
+file is a **protobuf** (a binary serialization format, like JSON but typed
+and compact) containing one `ModelProto`, whose interesting part is
+`model.graph`. Four fields matter:
+
+| Field | What it holds | Codebase analogy |
+|---|---|---|
+| `graph.input` / `graph.output` | Named, typed tensors the graph consumes/produces | the module's **public API** |
+| `graph.node` | The list of operator instances, in execution order | the **components** |
+| `graph.initializer` | The frozen weight tensors shipped inside the file | **constants** compiled into the binary |
+| edges | There is no edge list! | see below |
+
+**How wiring works — the one non-obvious part.** Every tensor that flows
+through the graph has a **string name**. Each node simply lists the *names*
+it reads (`node.input`) and the *names* it writes (`node.output`). If node A
+outputs `"ReLU32_Output_0"` and node B lists `"ReLU32_Output_0"` as an
+input, they're connected — that's the entire wiring mechanism, name
+matching, like variables passed between function calls. (Each name is
+written by exactly one node, so the graph is a clean dataflow — no
+reassignment, no cycles.) A `node.input` name can refer either to another
+node's output *or* to an initializer — that's how a Conv node receives its
+weights: they're just another named input.
+
+### 3.2 The listing code
+
+```python
+import onnx
+
+model = onnx.load("models/mnist-12.onnx")
+
+# The model's public API: its named inputs and outputs.
+print("== Graph inputs ==")
+for inp in model.graph.input:
+    print(" ", inp.name)
+print("== Graph outputs ==")
+for out in model.graph.output:
+    print(" ", out.name)
+
+# The frozen constants (weights) shipped inside the file.
+print("== Initializers (weights) ==")
+for init in model.graph.initializer:
+    print(f"  {init.name}: shape {list(init.dims)}")
+
+# Every node: operator type, then its named inputs -> outputs.
+print("== Nodes ==")
+for i, node in enumerate(model.graph.node):
+    print(f"  [{i}] {node.op_type}")
+    print(f"      in : {list(node.input)}")
+    print(f"      out: {list(node.output)}")
+```
+
+Verified output, in full:
+
+```text
+== Graph inputs ==
+  Input3
+== Graph outputs ==
+  Plus214_Output_0
+== Initializers (weights) ==
+  Parameter193: shape [16, 4, 4, 10]
+  Parameter87: shape [16, 8, 5, 5]
+  Parameter5: shape [8, 1, 5, 5]
+  Parameter6: shape [8, 1, 1]
+  Parameter88: shape [16, 1, 1]
+  Pooling160_Output_0_reshape0_shape: shape [2]
+  Parameter193_reshape1_shape: shape [2]
+  Parameter194: shape [1, 10]
+== Nodes ==
+  [0] Conv
+      in : ['Input3', 'Parameter5']
+      out: ['Convolution28_Output_0']
+  [1] Add
+      in : ['Convolution28_Output_0', 'Parameter6']
+      out: ['Plus30_Output_0']
+  [2] Relu
+      in : ['Plus30_Output_0']
+      out: ['ReLU32_Output_0']
+  [3] MaxPool
+      in : ['ReLU32_Output_0']
+      out: ['Pooling66_Output_0']
+  [4] Conv
+      in : ['Pooling66_Output_0', 'Parameter87']
+      out: ['Convolution110_Output_0']
+  [5] Add
+      in : ['Convolution110_Output_0', 'Parameter88']
+      out: ['Plus112_Output_0']
+  [6] Relu
+      in : ['Plus112_Output_0']
+      out: ['ReLU114_Output_0']
+  [7] MaxPool
+      in : ['ReLU114_Output_0']
+      out: ['Pooling160_Output_0']
+  [8] Reshape
+      in : ['Pooling160_Output_0', 'Pooling160_Output_0_reshape0_shape']
+      out: ['Pooling160_Output_0_reshape0']
+  [9] Reshape
+      in : ['Parameter193', 'Parameter193_reshape1_shape']
+      out: ['Parameter193_reshape1']
+  [10] MatMul
+      in : ['Pooling160_Output_0_reshape0', 'Parameter193_reshape1']
+      out: ['Times212_Output_0']
+  [11] Add
+      in : ['Times212_Output_0', 'Parameter194']
+      out: ['Plus214_Output_0']
+```
+
+### 3.3 Reading the listing — annotated
+
+The 12 nodes are really **four functional blocks**:
+
+```text
+Block A (nodes 0-3):  Conv -> Add -> Relu -> MaxPool     feature extraction, round 1
+Block B (nodes 4-7):  Conv -> Add -> Relu -> MaxPool     feature extraction, round 2
+Block C (nodes 8-9):  Reshape, Reshape                   plumbing (flatten for the classifier)
+Block D (nodes 10-11): MatMul -> Add                     the Linear classifier
+```
+
+Everything here maps straight back to Step 0 — Conv is §0.3, Relu §0.2,
+MaxPool §0.4, Reshape §0.7, MatMul+Add is exactly the `x @ W + b` from §0.1
+split into two nodes.
+
+Observations a systems analyst should make on this listing (this is the
+skill the job actually needs — reading export *noise* off a graph):
+
+- **Conv followed by a separate `Add` is an unfused bias.** In §0.1/§0.3 the
+  bias lived inside the layer; ONNX's Conv op supports a bias input
+  directly, yet this exporter emitted Conv-then-Add as two nodes. Harmless
+  semantically, but it's two graph nodes where one would do — precisely the
+  kind of pattern an accelerator compiler fuses away (or a field engineer
+  cleans up).
+- **Node [9] reshapes a *weight*, every single run.** `Parameter193` is a
+  frozen constant, so reshaping it could have been done once, offline, when
+  the file was created. Instead the graph does it at inference time. Again:
+  exporter sloppiness, again the kind of thing deployment tools
+  constant-fold away.
+- **The names (`Plus214`, `Times212`...) are fossils** from the framework
+  that trained this model (Microsoft's CNTK) — names carry provenance, like
+  generated code carrying its generator's naming style. You never need to
+  *parse* names; the `op_type` field is the truth.
+- **Where's Softmax?** The graph ends at the raw scores ("logits"). Many
+  deployed classifiers do this deliberately — the consumer only needs
+  `argmax` (which digit won), so the sums-to-1 normalization (§0.5) is left
+  out of the graph. Lesson: the ONNX graph is not always the whole
+  *conceptual* model — check what pre/post-processing lives outside the file.
+
+What the listing does **not** show is any actual tensor dimensions — we know
+`Pooling66_Output_0` connects node 3 to node 4, but not its shape. That's
+Step 4.
+
+---
+
+## Step 4 — Shape inference: real dimensions on every edge
+
+### 4.1 What shape inference is
+
+The `.onnx` file stores shapes only for the graph inputs, outputs, and
+weights — intermediate tensor shapes are *not* stored. **Shape inference**
+is a static-analysis pass that derives them: exactly like type inference in
+a compiler. Every operator has a shape contract (Step 0 was largely a
+catalog of those contracts — "Conv with SAME padding keeps H×W", "MaxPool
+2×2/2 halves H and W"...), so the pass starts from the declared input shape
+and pushes it through node by node. No model execution, no weights read —
+pure contract propagation. `onnx.shape_inference.infer_shapes(model)`
+returns a copy of the model with a `value_info` entry (name + inferred
+shape) added for every intermediate tensor.
+
+### 4.2 The code
+
+```python
+import onnx
+
+model = onnx.load("models/mnist-12.onnx")
+
+# Static analysis pass: propagate shapes through every node's contract.
+inferred = onnx.shape_inference.infer_shapes(model)
+
+# Collect every known tensor shape into one dictionary: name -> shape.
+shapes = {}
+
+def dims_of(tensor_type):
+    return [d.dim_value if d.HasField("dim_value") else "?"
+            for d in tensor_type.shape.dim]
+
+for vi in (list(inferred.graph.input) + list(inferred.graph.value_info)
+           + list(inferred.graph.output)):
+    shapes[vi.name] = dims_of(vi.type.tensor_type)
+for init in inferred.graph.initializer:          # weights have shapes too
+    shapes[init.name] = list(init.dims)
+
+# Now print the pipeline: every node with real dimensions on every edge.
+for i, node in enumerate(inferred.graph.node):
+    ins = ", ".join(f"{shapes.get(n, '?')}" for n in node.input)
+    outs = ", ".join(f"{shapes.get(n, '?')}" for n in node.output)
+    print(f"[{i:2}] {node.op_type:8} {ins}  ->  {outs}")
+```
+
+(One syntax note: a protobuf dimension can hold either a concrete number
+(`dim_value`) or a symbolic name like `"batch"` for models with flexible
+batch size — `HasField` checks which; this model is fully concrete, so
+`dims_of` never actually hits the `"?"` branch here.)
+
+Verified output:
+
+```text
+[ 0] Conv     [1, 1, 28, 28], [8, 1, 5, 5]  ->  [1, 8, 28, 28]
+[ 1] Add      [1, 8, 28, 28], [8, 1, 1]  ->  [1, 8, 28, 28]
+[ 2] Relu     [1, 8, 28, 28]  ->  [1, 8, 28, 28]
+[ 3] MaxPool  [1, 8, 28, 28]  ->  [1, 8, 14, 14]
+[ 4] Conv     [1, 8, 14, 14], [16, 8, 5, 5]  ->  [1, 16, 14, 14]
+[ 5] Add      [1, 16, 14, 14], [16, 1, 1]  ->  [1, 16, 14, 14]
+[ 6] Relu     [1, 16, 14, 14]  ->  [1, 16, 14, 14]
+[ 7] MaxPool  [1, 16, 14, 14]  ->  [1, 16, 4, 4]
+[ 8] Reshape  [1, 16, 4, 4], [2]  ->  [1, 256]
+[ 9] Reshape  [16, 4, 4, 10], [2]  ->  [256, 10]
+[10] MatMul   [1, 256], [256, 10]  ->  [1, 10]
+[11] Add      [1, 10], [1, 10]  ->  [1, 10]
+```
+
+### 4.3 The image's journey, narrated
+
+Follow one 28×28 digit photo through the pipeline (shapes are NCHW, §0.0;
+Conv/MaxPool settings below were read from the nodes' attributes):
+
+- **`[1, 1, 28, 28]` — input.** One image, one channel (grayscale), 28×28.
+- **[0] Conv → `[1, 8, 28, 28]`.** Weight shape `[8, 1, 5, 5]` decodes per
+  §0.3's spec as: **8 filters**, each looking at **1** input channel through
+  a **5×5** window. Channels: 1 → 8 — the image becomes 8 maps of
+  pattern-match evidence. H×W stayed 28×28 because this Conv uses SAME
+  padding (§0.3: zero-border so the window can center on edge pixels).
+- **[1] Add → same shape.** The unfused bias. Its shape `[8, 1, 1]` is one
+  number per channel; adding `[8,1,1]` to `[1,8,28,28]` works via
+  **broadcasting** — the standard tensor rule that a size-1 axis is
+  automatically stretched to match, so each channel's single bias value is
+  applied to all 28×28 positions of that channel.
+- **[2] Relu → same shape.** Per-element gate (§0.2), shapes never change.
+- **[3] MaxPool → `[1, 8, 14, 14]`.** Window 2×2, stride 2 (§0.4): H and W
+  halve, channels untouched. The tensor is now ¼ the size.
+- **[4] Conv → `[1, 16, 14, 14]`.** Weights `[16, 8, 5, 5]`: 16 filters,
+  each reading **all 8** incoming channels. 8 evidence-maps in, 16
+  higher-level evidence-maps out — round 2 of feature extraction, exactly
+  the "edges → parts" stacking §0.3 promised.
+- **[5][6] Add, Relu → same shape.** Bias (broadcast again), gate.
+- **[7] MaxPool → `[1, 16, 4, 4]`.** This one is window 3×3, stride 3:
+  14×14 → 4×4. Aggressive shrink before the classifier.
+- **[8] Reshape → `[1, 256]`.** The flatten (§0.7): 16 channels × 4 × 4 =
+  256 numbers, same bytes, new shape label — free. This is the bridge from
+  Conv-land (`N,C,H,W`) to Linear-land (`N, features`).
+- **[9] Reshape (the weight) → `[256, 10]`.** The oddity from Step 3.3: the
+  classifier's weights were saved as `[16, 4, 4, 10]` and get flattened to
+  `[256, 10]` *at runtime* on every inference. Constant-foldable noise.
+- **[10] MatMul → `[1, 10]`.** §0.1 verbatim: `(1, 256) @ (256, 10) = (1,
+  10)`. All 256 features vote on each of the 10 digit classes; 2,560
+  weights = 2,560 learned "how much does feature i suggest digit j" recipes.
+- **[11] Add → `[1, 10]` — the output.** Final bias. Ten raw scores, one per
+  digit; the consumer takes the argmax (no Softmax in-graph, see Step 3.3).
+
+Worth noticing the *asymmetry of scale*: the tensor spends most of the
+pipeline as a few thousand values (28×28×8 ≈ 6.3K at its peak) and exits as
+10 — while the parameters concentrate the opposite way (Conv1: 200 weights,
+Conv2: 3,200, classifier: 2,560). Step 5 turns exactly this into a
+per-layer table, and Step 6 turns it into performance reasoning.
+
+### 4.4 Cross-check: run the model for real
+
+Static analysis says the output should be `[1, 10]`. Trust but verify — run
+the actual pipeline with onnxruntime on a dummy input:
+
+```python
+import numpy as np
+import onnxruntime as ort
+
+# Start an inference session: onnxruntime compiles the graph for the CPU.
+sess = ort.InferenceSession("models/mnist-12.onnx")
+
+# A dummy "image": all zeros, in exactly the shape the graph input declares.
+x = np.zeros((1, 1, 28, 28), dtype=np.float32)
+
+# Run the whole pipeline. None = "give me every declared graph output".
+outputs = sess.run(None, {"Input3": x})
+
+print(outputs[0].shape)
+# (1, 10)
+print(np.round(outputs[0], 2))
+# [[-0.04  0.01  0.07  0.03 -0.13  0.14 -0.06 -0.05  0.08 -0.05]]
+```
+
+Shape matches the inferred `[1, 10]` — static analysis and runtime agree.
+(The scores are near-zero garbage because the input is a blank image; even
+so, the biases leak through and the model weakly "votes" for digit 5 —
+`0.14` is the max. Feed it real digit pixels and these become confident.)
+
+Also do the visual pass now: open `models/mnist-12.onnx` in
+**https://netron.app** — you'll see exactly the 12-node chain from Step 3,
+with the shapes from this step on the edges, and clicking any node shows
+the attributes we read programmatically (kernel_shape, strides, pads...).
+
+**Next: Step 5** — condense all of this into a per-layer spec table
+(op, input/output shape, parameter count, functional role), then Step 6:
+which layers are compute-bound vs memory-bound and why that matters.
