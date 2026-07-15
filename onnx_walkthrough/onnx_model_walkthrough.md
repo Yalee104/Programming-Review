@@ -1149,6 +1149,382 @@ Also do the visual pass now: open `models/mnist-12.onnx` in
 with the shapes from this step on the edges, and clicking any node shows
 the attributes we read programmatically (kernel_shape, strides, pads...).
 
-**Next: Step 5** — condense all of this into a per-layer spec table
-(op, input/output shape, parameter count, functional role), then Step 6:
-which layers are compute-bound vs memory-bound and why that matters.
+### 4.5 FAQ — why does node [9] reshape a *weight*, and where does `[16, 4, 4, 10]` come from?
+
+The classifier needs 2,560 weights — one per (feature, digit) pair, i.e. a
+`[256, 10]` matrix. `Parameter193` holds exactly those numbers, just labeled
+differently. Recall that the 256 features aren't an anonymous flat list:
+each is really "channel c at position (y, x)" of the `[1, 16, 4, 4]` tensor.
+The training framework (CNTK) defined the dense layer *directly on that 3-D
+tensor*, so it stored the weight in its natural coordinates:
+`[16, 4, 4, 10]` = "the weight connecting (channel, y, x) to digit d." Same
+2,560 numbers, addressed by 4-D coordinates instead of flat indices — like
+the same bytes viewed through a different struct definition.
+
+ONNX's `MatMul` only speaks 2-D matrices, so at export time the exporter had
+two options: flatten the constant **once, offline**, and store `[256, 10]`
+in the file (the right thing — a constant's flattened form is also a
+constant), or emit a Reshape node that flattens it **at runtime, every
+inference**. This exporter did the lazy second thing. Deployment tools
+(onnx-simplifier, onnxruntime's graph optimizer) recognize "Reshape of a
+constant," compute it once, and delete the node — constant folding.
+
+The subtle part worth internalizing: **the two Reshapes must agree on
+ordering.** Node [8] flattens the data channel-then-row-then-column; node
+[9] flattens the weight's first three axes in the *same* order, so row *i*
+of the matrix meets exactly the feature that landed at position *i* of the
+flattened data. If they disagreed, every shape check would still pass, the
+model would run without error — and output garbage, feature 37 multiplied
+by feature 122's recipe. Reshape/Transpose carry invisible *ordering
+contracts* that no type system checks: this is the NCHW-vs-NHWC porting
+failure mode in miniature, and exactly what the layout-audit lab later in
+this file's roadmap is about.
+
+---
+
+## Step 5 — The per-layer spec table
+
+Time to condense Steps 3–4 into the artifact you'd actually produce on the
+job: one table, every layer, its contract and its cost of ownership.
+
+**Counting parameters — one new idea.** A tensor's element count is just the
+product of its dimensions: the `[8, 1, 5, 5]` Conv weight stores
+8 × 1 × 5 × 5 = 200 numbers. And in this graph, *learned* parameters are
+exactly the **float** initializers — the int64 initializers (the `[2]`-shaped
+target-shape inputs of the Reshape nodes) are settings, not learned values.
+That type distinction is the whole counting rule.
+
+`step5_spec_table.py` implements it — and it's fully generic, so you can
+point it at any ONNX model with static shapes:
+
+```python
+import onnx
+from onnx import TensorProto
+
+model = onnx.load("models/mnist-12.onnx")
+inferred = onnx.shape_inference.infer_shapes(model)
+
+# name -> shape, for every tensor we know about (same as step 4).
+shapes = {}
+def dims_of(tensor_type):
+    return [d.dim_value if d.HasField("dim_value") else "?"
+            for d in tensor_type.shape.dim]
+for vi in (list(inferred.graph.input) + list(inferred.graph.value_info)
+           + list(inferred.graph.output)):
+    shapes[vi.name] = dims_of(vi.type.tensor_type)
+
+# Initializers = the constants baked into the file. Learned parameters are
+# the FLOAT ones (weights/biases); int64 constants are just settings
+# (e.g. the target-shape inputs of Reshape nodes), not learned values.
+init_elems = {}          # name -> element count, float initializers only
+for init in inferred.graph.initializer:
+    shapes[init.name] = list(init.dims)
+    if init.data_type == TensorProto.FLOAT:
+        n = 1
+        for d in init.dims:
+            n *= d
+        init_elems[init.name] = n
+
+total = 0
+print(f"{'#':>2}  {'op':8} {'data in':>15} {'-> out':>12} {'params':>7}")
+for i, node in enumerate(inferred.graph.node):
+    # Split the node's inputs: tensors flowing through the graph vs
+    # constants it owns (weights, settings).
+    data_ins = [n for n in node.input if n not in init_elems
+                and shapes.get(n) is not None and n not in
+                {init.name for init in inferred.graph.initializer}]
+    params = sum(init_elems.get(n, 0) for n in node.input)
+    total += params
+    din = str(shapes.get(data_ins[0])) if data_ins else "(const)"
+    dout = str(shapes.get(node.output[0], "?"))
+    print(f"{i:>2}  {node.op_type:8} {din:>15} {dout:>12} {params:>7,}")
+
+print(f"\nTotal learned parameters: {total:,}")
+print(f"As float32 (4 bytes each): {total * 4 / 1024:.1f} KB")
+```
+
+Verified output:
+
+```text
+ #  op               data in       -> out  params
+ 0  Conv      [1, 1, 28, 28] [1, 8, 28, 28]     200
+ 1  Add       [1, 8, 28, 28] [1, 8, 28, 28]       8
+ 2  Relu      [1, 8, 28, 28] [1, 8, 28, 28]       0
+ 3  MaxPool   [1, 8, 28, 28] [1, 8, 14, 14]       0
+ 4  Conv      [1, 8, 14, 14] [1, 16, 14, 14]   3,200
+ 5  Add      [1, 16, 14, 14] [1, 16, 14, 14]      16
+ 6  Relu     [1, 16, 14, 14] [1, 16, 14, 14]       0
+ 7  MaxPool  [1, 16, 14, 14] [1, 16, 4, 4]       0
+ 8  Reshape    [1, 16, 4, 4]     [1, 256]       0
+ 9  Reshape          (const)    [256, 10]   2,560
+10  MatMul          [1, 256]      [1, 10]       0
+11  Add              [1, 10]      [1, 10]      10
+
+Total learned parameters: 5,994
+As float32 (4 bytes each): 23.4 KB
+```
+
+The full spec table — the script's numbers plus the functional notes
+(this is the Step 5 deliverable):
+
+| # | Op | In → Out | Params | Why this layer exists |
+|---|---|---|---|---|
+| 0 | Conv | `1,1,28,28` → `1,8,28,28` | 200 | 8 pattern detectors (5×5) over the raw image (§0.3) |
+| 1 | Add | same | 8 | Conv 0's bias, unfused (one constant per channel) |
+| 2 | Relu | same | 0 | gate: keep only positive pattern evidence (§0.2) |
+| 3 | MaxPool | → `1,8,14,14` | 0 | halve the map, keep strongest evidence (§0.4) |
+| 4 | Conv | → `1,16,14,14` | 3,200 | 16 detectors over all 8 evidence maps — patterns *of* patterns |
+| 5 | Add | same | 16 | Conv 4's bias, unfused |
+| 6 | Relu | same | 0 | gate again |
+| 7 | MaxPool | → `1,16,4,4` | 0 | 3×3/3 shrink to a tiny 4×4 summary |
+| 8 | Reshape | → `1,256` | 0 | flatten: bridge to Linear-land (§0.7) |
+| 9 | Reshape | const → `256,10` | 2,560 | flattens the *classifier weight* at runtime (§4.5 — export artifact) |
+| 10 | MatMul | → `1,10` | 0 | all 256 features vote on 10 digits (§0.1) |
+| 11 | Add | → `1,10` | 10 | classifier bias → final scores |
+
+Three things to read off it:
+
+- **An attribution quirk that proves you understand the graph:** MatMul
+  shows 0 params and Reshape [9] shows 2,560 — because the script credits
+  parameters to whichever node *consumes the constant*, and thanks to the
+  export artifact from §4.5, that's the Reshape, not the MatMul.
+  Conceptually those 2,560 belong to the classifier. Tools that report
+  per-layer stats have exactly this kind of quirk; knowing *why* the number
+  landed on the "wrong" row is the difference between reading a report and
+  understanding it.
+- **Cross-check against reality:** 5,994 params × 4 bytes ≈ 23.4 KB, and the
+  file is 26 KB — weights account for ~90% of it, remainder is graph
+  structure. When those two numbers *don't* roughly agree, something is off
+  (duplicated weights, external data files, quantization) — a 10-second
+  sanity check worth making a habit.
+- **Where the parameters live:** Conv 4 (3,216 with bias) + classifier
+  (2,570) ≈ 96% of all parameters; the entire first block owns just 208.
+  Parameter storage concentrates *late* in CNNs — remember from Step 4.3
+  that activation size concentrates *early*. Both halves of that asymmetry
+  become performance-relevant next.
+
+---
+
+## Step 6 — Compute-bound or memory-bound?
+
+### 6.1 The idea, in plain terms
+
+Every layer has **two costs**, paid simultaneously:
+
+1. **Arithmetic** — the MACs (§0.1) it performs: the useful work.
+2. **Traffic** — the bytes it must move: read its input tensor, read its
+   weights, write its output tensor.
+
+Any chip has a fixed budget for each: its ALUs can do at most X MACs per
+second, and its memory system can deliver at most Y bytes per second. Both
+run in parallel — so a layer is limited by **whichever budget it exhausts
+first**. Exhaust the arithmetic budget → *compute-bound* (the memory system
+idles; this is where accelerators shine). Exhaust the byte budget →
+*memory-bound* (the expensive ALUs starve, waiting for data; a bigger
+"faster" chip won't help at all).
+
+Which way a layer falls depends on its **MACs-per-byte ratio** ("arithmetic
+intensity"): how much work does the chip *get to do* per byte it *has to
+fetch*? Lots of MACs per byte → the data is reused heavily once loaded →
+compute-bound. Few MACs per byte → the chip is basically a data pump →
+memory-bound. Where the crossover sits is a property of the *chip* (its
+MAC-rate divided by its byte-rate), not of the model — the verdicts below
+use teaching thresholds (≥10 compute-bound, <1 memory-bound), and on a real
+engagement you'd plug in the target chip's actual ratio.
+
+### 6.2 The cost model
+
+`step6_cost_model.py` (also generic) computes both costs per node. MAC
+counting needs only two rules, both direct from the Step 0 contracts:
+
+- **Conv**: every output element was produced by sliding a filter to one
+  position = one MAC per weight in the filter. So: output elements ×
+  filter size (for Conv 0: 6,272 outputs × 25-weight filters).
+- **MatMul**: every output element is a dot product over the shared
+  dimension K = one MAC per pair. So: output elements × K.
+- Everything else (Add, Relu, MaxPool, Reshape): ~0 MACs — they touch every
+  byte but compute almost nothing.
+
+```python
+import onnx
+
+model = onnx.load("models/mnist-12.onnx")
+inferred = onnx.shape_inference.infer_shapes(model)
+
+shapes = {}
+def dims_of(tensor_type):
+    return [d.dim_value if d.HasField("dim_value") else "?"
+            for d in tensor_type.shape.dim]
+for vi in (list(inferred.graph.input) + list(inferred.graph.value_info)
+           + list(inferred.graph.output)):
+    shapes[vi.name] = dims_of(vi.type.tensor_type)
+for init in inferred.graph.initializer:
+    shapes[init.name] = list(init.dims)
+
+def elems(name):
+    s = shapes.get(name)
+    if not s:
+        return 0
+    n = 1
+    for d in s:
+        n *= d
+    return n
+
+def macs_of(node):
+    if node.op_type == "Conv":
+        # one MAC per (output element x weight in the filter that made it):
+        # filter size = in_channels_per_group * kH * kW  (weight dims [1:])
+        w = shapes[node.input[1]]
+        filter_elems = 1
+        for d in w[1:]:
+            filter_elems *= d
+        return elems(node.output[0]) * filter_elems
+    if node.op_type in ("MatMul", "Gemm"):
+        # every output element is a dot product over the shared dimension K
+        k = shapes[node.input[0]][-1]
+        return elems(node.output[0]) * k
+    return 0        # elementwise / pooling / plumbing: no MACs
+
+print(f"{'#':>2}  {'op':8} {'MACs':>9} {'KB moved':>9} {'MACs/byte':>10}  verdict")
+total_macs = 0
+for i, node in enumerate(inferred.graph.node):
+    macs = macs_of(node)
+    total_macs += macs
+    bytes_moved = 4 * (sum(elems(n) for n in node.input) + elems(node.output[0]))
+    intensity = macs / bytes_moved if bytes_moved else 0.0
+    verdict = ("compute-bound" if intensity >= 10
+               else "borderline" if intensity >= 1
+               else "memory-bound")
+    print(f"{i:>2}  {node.op_type:8} {macs:>9,} {bytes_moved/1024:>9.1f} "
+          f"{intensity:>10.2f}  {verdict}")
+
+print(f"\nTotal MACs: {total_macs:,}")
+for i, node in enumerate(inferred.graph.node):
+    m = macs_of(node)
+    if m:
+        print(f"  node [{i}] {node.op_type}: {m:,} MACs = "
+              f"{100 * m / total_macs:.1f}% of all compute")
+```
+
+Verified output:
+
+```text
+ #  op            MACs  KB moved  MACs/byte  verdict
+ 0  Conv       156,800      28.3       5.40  borderline
+ 1  Add              0      49.0       0.00  memory-bound
+ 2  Relu             0      49.0       0.00  memory-bound
+ 3  MaxPool          0      30.6       0.00  memory-bound
+ 4  Conv       627,200      30.9      19.84  compute-bound
+ 5  Add              0      24.6       0.00  memory-bound
+ 6  Relu             0      24.5       0.00  memory-bound
+ 7  MaxPool          0      13.2       0.00  memory-bound
+ 8  Reshape          0       2.0       0.00  memory-bound
+ 9  Reshape          0      20.0       0.00  memory-bound
+10  MatMul       2,560      11.0       0.23  memory-bound
+11  Add              0       0.1       0.00  memory-bound
+
+Total MACs: 786,560
+  node [0] Conv: 156,800 MACs = 19.9% of all compute
+  node [4] Conv: 627,200 MACs = 79.7% of all compute
+  node [10] MatMul: 2,560 MACs = 0.3% of all compute
+```
+
+### 6.3 Reading the table — five observations that generalize
+
+1. **Conv 4 at 19.84 MACs/byte is the accelerator's dream.** It moves about
+   the same 30 KB as Conv 0 but does 4× the arithmetic on it — the loaded
+   data gets reused intensely. This is the kind of layer AI chips were
+   built for.
+2. **Same op type, different bottleneck.** Conv 0 manages only 5.40 —
+   because with a single input channel its filters are tiny (25 weights),
+   so each fetched byte supports little work. *Early convolutions are
+   structurally less intense than deep ones.* You cannot classify "Conv" as
+   compute-bound as a category; you have to look at the shapes. That's why
+   the spec table comes before the verdict.
+3. **The MatMul twist — batch size is destiny.** §0.1 called MatMul the
+   classic compute-bound op *because weights get reused across the batch*.
+   Here batch = 1, so each of the 2,560 weight bytes is fetched, used for
+   exactly one MAC, and discarded: 0.23 MACs/byte, firmly memory-bound.
+   Scale this observation up and you get the defining problem of LLM
+   inference: generating one token at a time is batch-1 MatMul after
+   batch-1 MatMul — enormous models held memory-bound. Same physics as
+   this 10-class digit classifier.
+4. **The zero-MAC rows are why fusion matters.** Add [1] and Relu [2] each
+   move ~49 KB — more bytes than either Conv! — for literally zero useful
+   arithmetic. Executed as separate steps, they'd *each* cost a full
+   round-trip of the tensor through memory. Fused into Conv 0's output path
+   (bias-add and clamp applied as each result exits the ALU), they cost
+   approximately nothing. An accelerator compiler's fusion pass turns rows
+   0–2 into one node; on this graph it eliminates most of the traffic.
+5. **The two Reshapes aren't equal.** Node [8] is metadata-only (§0.7 —
+   same bytes, new shape label: ~free). Node [9] pointlessly moves 20 KB of
+   frozen weights *every inference* (§4.5). The table quantifies exactly
+   what constant folding buys you.
+
+---
+
+## Step 7 — Which layers dominate runtime?
+
+The ranking falls straight out of Step 6:
+
+| Rank | Node | Share of all MACs | Why |
+|---|---|---|---|
+| 1 | Conv 4 | **79.7%** | 16 filters × 8 input channels = 128 channel pairs, 25-weight window each. The channel-pair product is the multiplier that explodes. |
+| 2 | Conv 0 | **19.9%** | 4× the spatial positions of Conv 4 (28² vs 14²), but only 8 channel pairs — the channel effect beats the spatial effect. |
+| 3 | MatMul 10 | 0.3% | 2,560 MACs. Owns 43% of the parameters but contributes noise-level compute — parameters ≠ compute. |
+
+Everything else: zero MACs; relevant only through memory traffic.
+
+**Why the deep Conv wins, structurally:** Conv cost = output positions ×
+output channels × input channels × window size. Going deeper, pooling
+shrinks positions by 4× per stage, but channel *pairs* grow — here 8 → 128,
+a 16× jump that dwarfs the 4× spatial saving. This is the standard CNN
+pattern: **compute concentrates in the middle-to-deep convolutions**, where
+maps are still moderately sized but channels have multiplied. On a ResNet
+the same analysis points at the stage-2/3 blocks; the tooling you just
+built finds them.
+
+**Honest caveats — what the MAC ranking does NOT say:**
+
+- On a model this small (0.8 MMACs — a modern phone chip does this in well
+  under a millisecond), per-layer *launch overhead* and the memory-bound
+  rows in practice dominate wall-clock time. MAC ranking identifies where
+  compute lives; on tiny models, compute isn't what you wait for.
+- The bytes column tells a complementary story: rows 1–3 (unfused
+  bias/gate/pool) collectively move more data than both convolutions
+  combined. If the target hardware *didn't* fuse them, the "cheap" ops
+  would be the actual bottleneck. Always read both columns.
+
+**The triage recipe** you'd apply to any customer model: rank layers by
+MACs to find the compute hotspots → check each hotspot's MACs/byte against
+the chip's ratio to see if it can actually run at compute speed → then scan
+the zero-MAC rows for unfused/unfolded traffic that fusion or offline
+folding should eliminate.
+
+---
+
+## Step 8 — Porting notes: your turn to write
+
+The final step of the exercise is yours. A **porting brief** is the ~half-page
+a field engineer writes after first contact with a customer model — for a
+colleague who hasn't opened the file and needs to know what porting it will
+involve. Everything you need is in Steps 3–7. Structure it in six parts:
+
+1. **What it is** — one sentence: task, input contract, output contract.
+2. **Topology** — the blocks in order, in words (not a node dump).
+3. **Parameters** — how many, roughly where they live, storage size.
+4. **Compute** — where the MACs concentrate; total scale.
+5. **Bottleneck character** — which parts are compute-bound vs
+   memory-bound, and what that implies on an accelerator.
+6. **Cleanup & risks** — export artifacts to fold/fuse, anything missing
+   from the graph the integration must supply, layout/ordering contracts
+   to respect.
+
+Write it in plain English, ~15–20 lines, as if briefing a colleague — then
+bring it back here. I'll review it against the data (and only then will we
+polish a final version into this file as the Step 8 deliverable). Resist
+the urge to re-read Steps 5–7 while writing; write from what stuck, then
+check. The gaps you find are the parts worth re-reading.
+
+**After that: Step 9** (attention/Transformer model) and the layout-audit
+lab from the roadmap.
