@@ -1,2 +1,5 @@
 .venv/
 __pycache__/
+models/clean_correct.onnx
+models/clean_naive.onnx
+models/messy_simplified.onnx

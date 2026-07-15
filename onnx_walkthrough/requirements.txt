@@ -3,3 +3,4 @@ numpy>=2.0
 onnx>=1.22
 onnxruntime>=1.27
 netron>=8.0
+onnxsim>=0.6            # graph simplifier, used as the lab's answer cross-check

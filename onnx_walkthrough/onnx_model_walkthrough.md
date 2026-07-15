@@ -2001,4 +2001,252 @@ ONNX export. What to expect, now that you can read it:
   seq² MatMuls in a 600-node graph.
 
 **Remaining from the roadmap:** Step 8 (your porting brief — now you can
-write it for either model, or both) and the layout-shuffling audit lab.
+write it for either model, or both) and the layout-shuffling audit lab
+below.
+
+---
+
+## Lab — the layout-shuffling audit
+
+### L.1 Mission briefing
+
+A customer ports their CNN to your accelerator and reports it running far
+slower than the benchmark numbers promised. The compute layers profile
+fine. You open the ONNX file and find what you always find: the graph is
+littered with data-movement ops that the original model's author never
+wrote — souvenirs of a sloppy framework→ONNX export path.
+
+Your patient is `models/messy_export.onnx` (committed in this repo; a small
+CNN, `1×3×8×8` image in, 10 scores out). It was manufactured for this
+exercise by `lab_build_messy.py` — build it yourself if you want a fresh
+copy. **Do not read `lab_answer_clean.py`** — the filename says why.
+
+Your deliverables, exactly as on a real engagement:
+
+1. **The audit** — for every data-movement / suspicious op in the graph, a
+   verdict: *removable* (and why), *foldable offline* (and why), or
+   *load-bearing* (and why it must stay). The worksheet is in L.4.
+2. **A cleaned graph** that keeps only what must run at inference.
+3. **Proof of equivalence.** The ground rule of graph hygiene: a cleanup
+   only counts if the cleaned model's outputs are **exactly identical** —
+   max difference 0.0, not "close". You're removing no-ops and folding
+   constants, not re-training; the arithmetic must be untouched.
+
+Fair warning, because it's the whole point: **at least one op in there
+looks exactly like the junk but is load-bearing.** Delete it and the model
+still runs, all shapes check out, and every answer is silently wrong.
+Classify by *function*, never by op name.
+
+### L.2 The patient's chart
+
+Your Steps 3–4 tools, pointed at the patient (verified output — this is
+your audit evidence):
+
+```bash
+python lab_build_messy.py            # writes models/messy_export.onnx
+python step3_list_nodes.py     models/messy_export.onnx
+python step4_shape_inference.py models/messy_export.onnx
+```
+
+The node listing (abridged to ops and wiring — run step3 yourself for the
+full form):
+
+```text
+== Initializers (weights) ==
+  w0: shape [8, 3, 3, 3]
+  b0: shape [8]
+  w1: shape [3, 3, 8, 16]
+  b1: shape [16]
+  w2: shape [256, 10]
+  b2: shape [10]
+  s0: shape [3]
+  s1: shape [2]
+```
+
+Shape inference:
+
+```text
+[ 0] Cast     [1, 3, 8, 8]  ->  [1, 3, 8, 8]
+[ 1] Transpose [1, 3, 8, 8]  ->  [1, 8, 8, 3]
+[ 2] Transpose [1, 8, 8, 3]  ->  [1, 3, 8, 8]
+[ 3] Conv     [1, 3, 8, 8], [8, 3, 3, 3], [8]  ->  [1, 8, 8, 8]
+[ 4] Identity [1, 8, 8, 8]  ->  [1, 8, 8, 8]
+[ 5] Relu     [1, 8, 8, 8]  ->  [1, 8, 8, 8]
+[ 6] MaxPool  [1, 8, 8, 8]  ->  [1, 8, 4, 4]
+[ 7] Transpose [3, 3, 8, 16]  ->  [16, 8, 3, 3]
+[ 8] Conv     [1, 8, 4, 4], [16, 8, 3, 3], [16]  ->  [1, 16, 4, 4]
+[ 9] Relu     [1, 16, 4, 4]  ->  [1, 16, 4, 4]
+[10] Transpose [1, 16, 4, 4]  ->  [1, 4, 4, 16]
+[11] Reshape  [1, 4, 4, 16], [3]  ->  [1, 16, 16]
+[12] Reshape  [1, 16, 16], [2]  ->  [1, 256]
+[13] MatMul   [1, 256], [256, 10]  ->  [1, 10]
+[14] Add      [1, 10], [10]  ->  [1, 10]
+[15] Identity [1, 10]  ->  [1, 10]
+```
+
+Two ONNX ops you haven't formally met, both trivial:
+
+- **Cast** — convert element type (float→int8, etc.). Look at what THIS
+  one converts from and to (step3 shows the attribute; shape inference
+  already tells you both sides are float).
+- **Identity** — output = input, verbatim. It exists for graph-plumbing
+  reasons inside frameworks and should essentially never survive an export.
+
+### L.3 Method and tools
+
+The audit checklist for each data-movement/no-op candidate:
+
+1. **Is it a no-op by type?** (Identity always; Cast when src type = dst type.)
+2. **Does it cancel against a neighbor?** (Two Transposes back-to-back whose
+   permutations undo each other; a Reshape immediately re-reshaped.)
+3. **Is its input a frozen constant?** Then it can run *once, offline*
+   (constant folding) — it doesn't belong in the inference graph. (You've
+   seen this before: MNIST node [9], §4.6.)
+4. **Does it change the ORDER of values feeding a Reshape/MatMul?** Then
+   removing it changes *which weight meets which feature* — it may be
+   load-bearing even though it "does no math" (§4.6's ordering contract).
+   Suspect every Transpose between the last Conv and a flatten.
+
+When reasoning isn't enough — experiment. The equivalence harness
+(`lab_compare.py`) runs two models on the same seeded inputs and reports
+the max output difference:
+
+```python
+import sys
+
+import numpy as np
+import onnxruntime as ort
+
+path_a, path_b = sys.argv[1], sys.argv[2]
+sess_a = ort.InferenceSession(path_a)
+sess_b = ort.InferenceSession(path_b)
+
+# Same seeded inputs for both, shaped from each model's own declared input.
+rng = np.random.default_rng(123)
+batch = [rng.standard_normal(
+             [d if isinstance(d, int) else 1
+              for d in sess_a.get_inputs()[0].shape]).astype(np.float32)
+         for _ in range(8)]
+
+worst = 0.0
+for x in batch:
+    (out_a,) = sess_a.run(None, {sess_a.get_inputs()[0].name: x})[:1]
+    (out_b,) = sess_b.run(None, {sess_b.get_inputs()[0].name: x})[:1]
+    if out_a.shape != out_b.shape:
+        print(f"SHAPE MISMATCH: {out_a.shape} vs {out_b.shape}")
+        sys.exit(1)
+    worst = max(worst, float(np.abs(out_a - out_b).max()))
+
+print(f"{path_a}  vs  {path_b}")
+print(f"outputs {out_a.shape}, {len(batch)} random inputs, "
+      f"max abs difference: {worst}")
+print("VERDICT:", "equivalent (bit-exact)" if worst == 0.0
+      else "NOT equivalent - the models compute different things")
+```
+
+Sanity check on the harness itself (a model must equal itself):
+
+```bash
+python lab_compare.py models/messy_export.onnx models/messy_export.onnx
+# ...max abs difference: 0.0 -> equivalent (bit-exact)
+```
+
+To build cleaned candidates, use the §9.1 technique (`helper.make_node` /
+`make_graph`) — extract the patient's weights with
+`numpy_helper.to_array(initializer)` so your cleaned model uses the *same*
+frozen constants.
+
+### L.4 The worksheet
+
+Nine candidates. Fill in the verdict column (removable / fold offline /
+load-bearing — and one sentence of *why*) before opening L.5:
+
+| Node | Op | Evidence from the chart | Your verdict |
+|---|---|---|---|
+| 0 | Cast | float → float, shape unchanged | |
+| 1 | Transpose | `[1,3,8,8] → [1,8,8,3]` | |
+| 2 | Transpose | `[1,8,8,3] → [1,3,8,8]` | |
+| 4 | Identity | between Conv and Relu | |
+| 7 | Transpose | input is initializer `w1 [3,3,8,16]` | |
+| 10 | Transpose | `[1,16,4,4] → [1,4,4,16]`, feeds the flatten | |
+| 11 | Reshape | `→ [1,16,16]`, feeds another Reshape | |
+| 12 | Reshape | `→ [1,256]`, feeds the MatMul | |
+| 15 | Identity | last node before the output | |
+
+Then: build your cleaned model, run `lab_compare.py` against the patient,
+and only call it done at **max abs difference: 0.0**.
+
+### L.5 Answer key
+
+<details>
+<summary><b>Spoilers — open only after your own audit</b></summary>
+
+**Verdicts:**
+
+| Node | Verdict | Why |
+|---|---|---|
+| 0 Cast | **remove** | float→float: converts a type to itself. Pure no-op. |
+| 1 Transpose | **remove** | NCHW→NHWC immediately undone by node 2: the pair cancels. Two full tensor copies for nothing — the classic layout-thrash signature. |
+| 2 Transpose | **remove** | other half of the canceling pair. |
+| 4 Identity | **remove** | no-op; its only cost is breaking Conv→Relu adjacency, i.e. blocking fusion (§6.3, point 4). |
+| 7 Transpose | **fold offline** | its input `w1` is a frozen constant stored in TensorFlow-style HWIO layout `[3,3,8,16]`; the graph converts it to OIHW `[16,8,3,3]` at runtime, every inference. Do the transpose once, save the result — MNIST node [9] all over again, Transpose flavor. |
+| 10 Transpose | **LOAD-BEARING — keep** | this is the trap. It reorders the features from channel-first to channel-last *before* the flatten, and the classifier weight `w2 [256,10]` was defined against that NHWC flatten order. Remove it: everything still runs, shapes all check out, outputs are silently garbage (§4.6's ordering contract, weaponized). |
+| 11 Reshape | **remove** | first half of a Reshape→Reshape chain; only the final `[1,256]` matters. |
+| 12 Reshape | **keep** | the real flatten feeding the MatMul. |
+| 15 Identity | **remove** | trailing no-op. |
+
+**The cleaned graph** (`lab_answer_clean.py` builds it from the patient's
+own extracted weights — the professional move: clean the artifact you were
+given): Conv → Relu → MaxPool → Conv(w1 pre-transposed) → Relu →
+**Transpose** → Reshape → MatMul → Add. Nine nodes, down from sixteen.
+
+**Proof** (verified output):
+
+```text
+models/messy_export.onnx  vs  models/clean_correct.onnx
+outputs (1, 10), 8 random inputs, max abs difference: 0.0
+VERDICT: equivalent (bit-exact)
+```
+
+**And the trap, sprung on purpose** — the same cleanup but with node 10
+also deleted (`clean_naive.onnx`). It runs. Shapes pass. And:
+
+```text
+models/messy_export.onnx  vs  models/clean_naive.onnx
+outputs (1, 10), 8 random inputs, max abs difference: 10.828176498413086
+VERDICT: NOT equivalent - the models compute different things
+```
+
+No error anywhere — only the equivalence harness catches it. This is why
+"prove 0.0" is a deliverable, not a nicety.
+
+**What the cleanup bought** (step6_cost_model on both): identical 34,816
+MACs, but bytes moved per inference drop **52.9 KB → 33.3 KB (−37%)** —
+and Conv→Relu are adjacent again, so a fusing compiler gets its shot. On
+this toy that's microseconds; on a real NHWC-exported detection model with
+transpose pairs around *every* Conv, this exact audit is routinely the
+single biggest performance fix.
+
+**Cross-check with the industry tool** — `onnx-simplifier` (in
+requirements.txt):
+
+```bash
+python -m onnxsim models/messy_export.onnx models/messy_simplified.onnx
+python lab_compare.py models/messy_export.onnx models/messy_simplified.onnx
+```
+
+Verified: it produces 8 nodes — Conv, Relu, MaxPool, Conv, Relu,
+**Transpose**, Reshape, Gemm — bit-exact (0.0). Read its result like a
+review of your audit: it removed the same seven artifacts, folded the same
+weight transpose, **kept node 10** (a correct tool and a correct audit
+agree on the trap), and went one step further than we did: fused
+MatMul+Add into a single `Gemm` node — §0.1's "full form" op. When your
+manual audit and onnxsim disagree, one of you is wrong; find out which
+before shipping.
+
+</details>
+
+---
+
+**Still open:** Step 8 — your porting brief. You now have three models to
+choose from.
