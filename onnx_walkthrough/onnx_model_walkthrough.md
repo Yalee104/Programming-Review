@@ -995,8 +995,10 @@ two:
  └─┘            └──┘       the outer 1 and 10 survive
 ```
 
-The only matrix that bridges `256 → 10` this way is `256×10`. Any other shape
-is not "worse" — it simply won't multiply:
+The only matrix that bridges `256 → 10` this way is `256×10`. Any other
+shape either refuses to multiply outright (its inner dimension doesn't
+match the incoming 256), or multiplies fine but yields the wrong number of
+outputs:
 
 ```python
 import numpy as np
@@ -1008,7 +1010,8 @@ print("features @ W[256,10] ->", (features @ W_right).shape, " (10 class scores)
 
 for bad in [(10, 256), (256, 256), (128, 10)]:
     try:
-        (features @ np.zeros(bad)).shape
+        out = (features @ np.zeros(bad)).shape
+        print(f"features @ W{bad}  -> {out}  (multiplies, but NOT 10 scores!)")
     except ValueError as e:
         print(f"features @ W{bad}  -> ERROR: {str(e).split(':')[0]}")
 ```
@@ -1018,8 +1021,14 @@ Verified output:
 ```text
 features @ W[256,10] -> (1, 10)  (10 class scores)
 features @ W(10, 256)  -> ERROR: matmul
+features @ W(256, 256)  -> (1, 256)  (multiplies, but NOT 10 scores!)
 features @ W(128, 10)  -> ERROR: matmul
 ```
+
+(Note the `(256, 256)` case: shape checks alone don't guarantee the *right*
+answer — it produces 256 "scores" for a 10-class problem without a single
+error. Wrong-but-runnable is the dangerous failure mode, same lesson as the
+flatten-ordering contract in §4.6.)
 
 Note the `256` is *inherited* (it's whatever the conv stack happened to
 emit — `16 channels × 4 × 4`) while the `10` is *chosen*. Change the conv
@@ -1113,7 +1122,7 @@ together — then **froze** the final numbers and saved them into the `.onnx`
 file as a constant. At inference no learning happens; those frozen numbers
 just get multiplied against your image's features. (And the
 `[16,4,4,10]`-vs-`[256,10]` wrinkle from §3.3 is only about how that frozen
-matrix is *stored* — see the note at node [9] above.)
+matrix is *stored* — §4.6 below tells that story in full.)
 
 ### 4.5 Cross-check: run the model for real
 
@@ -1149,7 +1158,7 @@ Also do the visual pass now: open `models/mnist-12.onnx` in
 with the shapes from this step on the edges, and clicking any node shows
 the attributes we read programmatically (kernel_shape, strides, pads...).
 
-### 4.5 FAQ — why does node [9] reshape a *weight*, and where does `[16, 4, 4, 10]` come from?
+### 4.6 FAQ — why does node [9] reshape a *weight*, and where does `[16, 4, 4, 10]` come from?
 
 The classifier needs 2,560 weights — one per (feature, digit) pair, i.e. a
 `[256, 10]` matrix. `Parameter193` holds exactly those numbers, just labeled
@@ -1278,7 +1287,7 @@ The full spec table — the script's numbers plus the functional notes
 | 6 | Relu | same | 0 | gate again |
 | 7 | MaxPool | → `1,16,4,4` | 0 | 3×3/3 shrink to a tiny 4×4 summary |
 | 8 | Reshape | → `1,256` | 0 | flatten: bridge to Linear-land (§0.7) |
-| 9 | Reshape | const → `256,10` | 2,560 | flattens the *classifier weight* at runtime (§4.5 — export artifact) |
+| 9 | Reshape | const → `256,10` | 2,560 | flattens the *classifier weight* at runtime (§4.6 — export artifact) |
 | 10 | MatMul | → `1,10` | 0 | all 256 features vote on 10 digits (§0.1) |
 | 11 | Add | → `1,10` | 10 | classifier bias → final scores |
 
@@ -1287,7 +1296,7 @@ Three things to read off it:
 - **An attribution quirk that proves you understand the graph:** MatMul
   shows 0 params and Reshape [9] shows 2,560 — because the script credits
   parameters to whichever node *consumes the constant*, and thanks to the
-  export artifact from §4.5, that's the Reshape, not the MatMul.
+  export artifact from §4.6, that's the Reshape, not the MatMul.
   Conceptually those 2,560 belong to the classifier. Tools that report
   per-layer stats have exactly this kind of quirk; knowing *why* the number
   landed on the "wrong" row is the difference between reading a report and
@@ -1458,7 +1467,7 @@ Total MACs: 786,560
    0–2 into one node; on this graph it eliminates most of the traffic.
 5. **The two Reshapes aren't equal.** Node [8] is metadata-only (§0.7 —
    same bytes, new shape label: ~free). Node [9] pointlessly moves 20 KB of
-   frozen weights *every inference* (§4.5). The table quantifies exactly
+   frozen weights *every inference* (§4.6). The table quantifies exactly
    what constant folding buys you.
 
 ---

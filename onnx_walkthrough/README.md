@@ -25,7 +25,7 @@ onnx_walkthrough/
 │   └── 07_data_movement.py       <- section 0.7  Reshape / Transpose / Concat / Slice
 ├── step3_list_nodes.py           <- Step 3: list every node in the graph
 ├── step4_shape_inference.py      <- Step 4: infer tensor shapes on every edge
-├── step4_run_model.py            <- Step 4.4: execute the model with onnxruntime
+├── step4_run_model.py            <- Step 4.5: execute the model with onnxruntime
 ├── step5_spec_table.py           <- Step 5: per-layer spec table with parameter counts
 └── step6_cost_model.py           <- Step 6: MACs vs bytes moved per node (bottleneck analysis)
 ```

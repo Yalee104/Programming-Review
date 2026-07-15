@@ -4,7 +4,7 @@ Confirms the output shape that static shape inference predicted, by
 executing the real pipeline on a dummy input. Run from the
 onnx_walkthrough/ folder.
 
-See section "Step 4.4" of onnx_model_walkthrough.md.
+See section "Step 4.5" of onnx_model_walkthrough.md.
 """
 import numpy as np
 import onnxruntime as ort
