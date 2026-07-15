@@ -10,6 +10,7 @@ interactive, mobile-friendly quiz site rendered straight from the markdown.
 | `cpp_study_summary.md` | C++ study summary |
 | `python_study_summary.md` | Python study summary |
 | `cuda_study_summary.md` | CUDA study summary |
+| `onnx_walkthrough/` | ONNX / NN-operator walkthrough: study md, runnable example scripts, model file (see its README for setup) |
 | `index.html` | Site home — pick a language, then Review or Quiz |
 | `review.html` | Renders a study summary md in the browser (section jump menu, deep links) |
 | `quiz.html` | Interactive quiz — multiple choice & fill-in-the-blank |

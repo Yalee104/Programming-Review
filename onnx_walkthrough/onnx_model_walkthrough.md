@@ -7,6 +7,12 @@ treating every operator as a **software component with an input/output spec**.
 No formal math. Every operator is explained *functionally*: what it does,
 what its contract is, and why the network needs it.
 
+Every runnable example in this document also exists as a standalone script
+in this folder (`step0_primer/*.py`, `step3_*.py`, `step4_*.py`) — see
+[`README.md`](README.md) for the folder layout, the Python
+virtual-environment setup, and how to run them. The scripts are the exact
+code shown here; this document adds the explanation around the code.
+
 **Roadmap** (each step gets its own section as we go):
 
 | Step | What we do |
@@ -646,7 +652,7 @@ handwritten digit** and outputs **10 scores**, one per digit 0–9 — the
    ResNet, MobileNet etc. are this same skeleton with more floors.
 4. **Static input shape** (exactly 1×1×28×28, no "dynamic batch" wildcards),
    so Step 4's shape inference produces clean concrete numbers everywhere.
-5. **Tiny** — 26 KB. The file is committed in this repo at
+5. **Tiny** — 26 KB. The file is committed in this folder at
    `models/mnist-12.onnx`, so everything below is reproducible offline.
 
 To re-download it yourself:
@@ -672,6 +678,11 @@ One line, three packages:
 pip install onnx onnxruntime netron
 ```
 
+(Recommended: install into a Python virtual environment instead of your
+system Python — [`README.md`](README.md) in this folder has the exact
+`venv` setup commands, and `requirements.txt` pins everything, so
+`pip install -r requirements.txt` covers all of it, NumPy included.)
+
 | Package | What it is | Role in this exercise |
 |---|---|---|
 | `onnx` | The format's official Python library: load a `.onnx` file into Python objects, walk the graph, run checkers and shape inference | Steps 3–5: all our inspection code |
@@ -686,8 +697,8 @@ before reading source.
 
 Versions used to verify everything below (any recent versions are fine):
 Python 3.11, `onnx` 1.22.0, `onnxruntime` 1.27.0, `numpy` 2.4.6.
-All snippets assume you run them **from this repo's root folder** (so the
-relative path `models/mnist-12.onnx` resolves).
+All snippets assume you run them **from this `onnx_walkthrough/` folder**
+(so the relative path `models/mnist-12.onnx` resolves).
 
 ---
 
