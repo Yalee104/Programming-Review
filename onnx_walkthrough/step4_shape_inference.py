@@ -6,9 +6,13 @@ whole pipeline with concrete dimensions. Run from the onnx_walkthrough/ folder.
 
 See section "Step 4" of onnx_model_walkthrough.md for the narrated journey.
 """
+import sys
+
 import onnx
 
-model = onnx.load("models/mnist-12.onnx")
+# Model path can be passed as an argument; defaults to the MNIST model.
+MODEL_PATH = sys.argv[1] if len(sys.argv) > 1 else "models/mnist-12.onnx"
+model = onnx.load(MODEL_PATH)
 
 # Static analysis pass: propagate shapes through every node's contract.
 inferred = onnx.shape_inference.infer_shapes(model)

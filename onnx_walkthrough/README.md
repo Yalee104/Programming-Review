@@ -14,7 +14,8 @@ onnx_walkthrough/
 ├── requirements.txt              <- everything pip needs to install
 ├── onnx_model_walkthrough.md     <- the actual study material
 ├── models/
-│   └── mnist-12.onnx             <- the model under dissection (26 KB)
+│   ├── mnist-12.onnx             <- the CNN under dissection (26 KB)
+│   └── tiny_attention.onnx       <- one Transformer block, built by step9 (4 KB)
 ├── step0_primer/                 <- one runnable script per operator family
 │   ├── 01_matmul_linear.py       <- section 0.1  MatMul / Linear / Gemm
 │   ├── 02_activations.py         <- section 0.2  ReLU / SiLU / GELU
@@ -27,8 +28,14 @@ onnx_walkthrough/
 ├── step4_shape_inference.py      <- Step 4: infer tensor shapes on every edge
 ├── step4_run_model.py            <- Step 4.5: execute the model with onnxruntime
 ├── step5_spec_table.py           <- Step 5: per-layer spec table with parameter counts
-└── step6_cost_model.py           <- Step 6: MACs vs bytes moved per node (bottleneck analysis)
+├── step6_cost_model.py           <- Step 6: MACs vs bytes moved per node (bottleneck analysis)
+├── step9_build_attention.py      <- Step 9: build a Transformer block with onnx.helper, run it
+└── step9_seq_scaling.py          <- Step 9.3: attention MACs vs sequence length (the seq² story)
 ```
+
+The step3–step6 scripts take an **optional model path** argument (default:
+`models/mnist-12.onnx`) — e.g. `python step6_cost_model.py models/tiny_attention.onnx`,
+or point them at any ONNX model with static shapes.
 
 Every script is the exact code shown in the corresponding section of the
 markdown, with the verified output in comments — the markdown adds the
@@ -76,6 +83,9 @@ python step4_shape_inference.py
 python step4_run_model.py
 python step5_spec_table.py
 python step6_cost_model.py
+python step9_build_attention.py     # writes models/tiny_attention.onnx, prints the attention matrix
+python step9_seq_scaling.py
+python step4_shape_inference.py models/tiny_attention.onnx   # any step3-6 tool, on the new model
 ```
 
 Expected output for each script is in its comments and, with full

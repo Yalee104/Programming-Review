@@ -6,9 +6,13 @@ Run from the onnx_walkthrough/ folder.
 
 See section "Step 3" of onnx_model_walkthrough.md for the annotated reading.
 """
+import sys
+
 import onnx
 
-model = onnx.load("models/mnist-12.onnx")
+# Model path can be passed as an argument; defaults to the MNIST model.
+MODEL_PATH = sys.argv[1] if len(sys.argv) > 1 else "models/mnist-12.onnx"
+model = onnx.load(MODEL_PATH)
 
 # The model's public API: its named inputs and outputs.
 print("== Graph inputs ==")

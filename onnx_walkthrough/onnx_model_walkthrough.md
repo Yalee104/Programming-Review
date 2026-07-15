@@ -732,9 +732,13 @@ weights: they're just another named input.
 ### 3.2 The listing code
 
 ```python
+import sys
+
 import onnx
 
-model = onnx.load("models/mnist-12.onnx")
+# Model path can be passed as an argument; defaults to the MNIST model.
+MODEL_PATH = sys.argv[1] if len(sys.argv) > 1 else "models/mnist-12.onnx"
+model = onnx.load(MODEL_PATH)
 
 # The model's public API: its named inputs and outputs.
 print("== Graph inputs ==")
@@ -875,9 +879,13 @@ shape) added for every intermediate tensor.
 ### 4.2 The code
 
 ```python
+import sys
+
 import onnx
 
-model = onnx.load("models/mnist-12.onnx")
+# Model path can be passed as an argument; defaults to the MNIST model.
+MODEL_PATH = sys.argv[1] if len(sys.argv) > 1 else "models/mnist-12.onnx"
+model = onnx.load(MODEL_PATH)
 
 # Static analysis pass: propagate shapes through every node's contract.
 inferred = onnx.shape_inference.infer_shapes(model)
@@ -1226,10 +1234,14 @@ That type distinction is the whole counting rule.
 point it at any ONNX model with static shapes:
 
 ```python
+import sys
+
 import onnx
 from onnx import TensorProto
 
-model = onnx.load("models/mnist-12.onnx")
+# Model path can be passed as an argument; defaults to the MNIST model.
+MODEL_PATH = sys.argv[1] if len(sys.argv) > 1 else "models/mnist-12.onnx"
+model = onnx.load(MODEL_PATH)
 inferred = onnx.shape_inference.infer_shapes(model)
 
 # name -> shape, for every tensor we know about (same as step 4).
@@ -1374,9 +1386,13 @@ counting needs only two rules, both direct from the Step 0 contracts:
   byte but compute almost nothing.
 
 ```python
+import sys
+
 import onnx
 
-model = onnx.load("models/mnist-12.onnx")
+# Model path can be passed as an argument; defaults to the MNIST model.
+MODEL_PATH = sys.argv[1] if len(sys.argv) > 1 else "models/mnist-12.onnx"
+model = onnx.load(MODEL_PATH)
 inferred = onnx.shape_inference.infer_shapes(model)
 
 shapes = {}
@@ -1556,3 +1572,433 @@ check. The gaps you find are the parts worth re-reading.
 
 **After that: Step 9** (attention/Transformer model) and the layout-audit
 lab from the roadmap.
+
+---
+
+## Step 9 — The attention model: one Transformer block
+
+*(Step 8 — your porting brief — stays open; we're jumping ahead by request.)*
+
+The CNN pass is done; now the other half of the modern-model world:
+**attention**, the operator family behind Transformers (BERT, GPT, ViT,
+LLMs). Plan: understand the mechanism functionally (§9.0), *build* a
+minimal attention model as ONNX (§9.1), dissect it with the exact tools
+from Steps 3–6 (§9.2), and pull out what changes for hardware (§9.3).
+
+### 9.0 What attention is — the §0-style primer
+
+**The problem it solves.** Every operator so far has *fixed routing*: a
+Conv always mixes each pixel with the same neighbors; a Linear always mixes
+features by the same frozen recipe. Language breaks that: in "the chip
+overheated because **it** was underclocked", the meaning of *it* depends on
+another word — and *which* word varies from sentence to sentence. You need
+an operator whose routing is **computed from the data itself, per input**:
+"decide at runtime which other tokens matter to me, and pull information
+from those."
+
+**The mechanism: a soft dictionary lookup.** Each token (a word/word-piece,
+represented as a feature vector — here 8 numbers) derives three things from
+itself, each via a plain §0.1 Linear projection:
+
+- **Q (query)** — what I'm *asking for* ("I'm a pronoun; looking for a noun")
+- **K (key)** — what I *offer* ("I'm a noun, subject of the sentence")
+- **V (value)** — my actual *content*, the information worth taking
+
+Then, with S tokens:
+
+1. **Scores:** every token's ask is compared against every token's offer —
+   one MatMul producing an **S×S table**: entry (i, j) = "how relevant is
+   token j to token i". Note what's new: *both* sides of this MatMul are
+   data. In the whole MNIST model, one side of every MatMul/Conv was a
+   frozen weight — here the network multiplies *activations by activations*.
+2. **Scale + Softmax, per row:** §0.5's second job. Each row of raw scores
+   becomes a sums-to-1 **attention budget** — "token i spends 60% of its
+   attention on token 3, 25% on token 0, ...". (The scale — dividing by a
+   constant based on the feature count — just keeps scores in Softmax's
+   responsive range so one token doesn't grab ~100% by numeric accident.)
+3. **Context:** a second data×data MatMul blends the V rows using those
+   budgets — token i receives a weighted mix of the *content* of the tokens
+   it attended to. Result: back to `[S, D]`, one updated vector per token.
+
+**After the lookup, two glue ideas you haven't met yet:**
+
+- **Residual connection** — an `Add` that mixes the block's *input* back
+  into its output. Functionally: attention computes a **correction**, not a
+  replacement; the original token rides through on a bypass wire and the
+  block adds what it learned. (This is also why very deep stacks stay
+  trainable: information can always flow through the bypass.)
+- Then **LayerNorm** (§0.6 — the live-stats one that *doesn't* fold away)
+  re-conditions the signal.
+
+**Then a per-token MLP:** Linear up (8 → 32) → GELU (§0.2) → Linear down
+(32 → 8), plus its own residual + LayerNorm. Functionally: attention
+*gathers* information across tokens; the MLP *processes* what each token
+gathered, independently. Attention is the only place tokens talk to each
+other — everything else in a Transformer is per-token.
+
+**Component spec — the whole block:**
+
+| | |
+|---|---|
+| Input | `[batch, S tokens, D features]` |
+| Parameters | 4 projection matrices `D×D`, 2 MLP matrices `D×H`, `H×D`, 2 LayerNorm scale/shift pairs |
+| Output | **exactly the same shape** `[batch, S, D]` |
+| Learned? | Yes — all the projections |
+
+Same shape out as in → blocks stack like Lego. A real Transformer is this
+block repeated N times (bert-tiny: 2, BERT-base: 12, big LLMs: ~100) with
+an embedding layer in front and a task head at the end. Understand one
+block, you understand the whole tower. (Real blocks also use
+**multi-head** attention: run 8–16 *small* independent lookups in parallel
+and concatenate — same mechanism, split for diversity of "what to look
+for". One head keeps our graph readable.)
+
+### 9.1 Build it instead of downloading it
+
+Why build: real "small" transformers export to 100–600 nodes of repetitive,
+noisy graph — the *unit that repeats* is one block, and a hand-built block
+is ~16 clean nodes, a few KB (committable), with attention as the only new
+thing. Bonus: you learn the *writing* direction of the ONNX data model from
+Step 3.1 — `helper.make_node(op, input_names, output_names)` writes one
+line of the wiring table; `make_graph` declares the public API (inputs/
+outputs) and the frozen constants (initializers); `checker.check_model`
+validates against the spec. Reading and writing the same structure.
+
+The builder (this is `step9_build_attention.py`; weights are seeded random
+stand-ins for training — the *mechanism* doesn't care):
+
+```python
+import numpy as np
+import onnx
+from onnx import TensorProto, helper, numpy_helper
+
+SEQ, DIM, HID = 4, 8, 32          # tokens, features per token, MLP hidden size
+
+
+def build_block(seq_len=SEQ, dim=DIM, hidden=HID, seed=0):
+    """Build one Transformer encoder block; returns an onnx ModelProto."""
+    rng = np.random.default_rng(seed)
+
+    def weight(name, *shape):
+        # a frozen constant (initializer): small random values stand in for
+        # what training would have learned
+        w = rng.standard_normal(shape).astype(np.float32) * 0.5
+        return numpy_helper.from_array(w, name=name)
+
+    inits = [
+        weight("Wq", dim, dim), weight("Wk", dim, dim), weight("Wv", dim, dim),
+        weight("Wo", dim, dim),                       # attention output projection
+        weight("Wup", dim, hidden), weight("Wdown", hidden, dim),   # the MLP
+        numpy_helper.from_array(                       # 1/sqrt(dim) score scaling
+            np.float32(1.0 / np.sqrt(dim)), name="scale"),
+        numpy_helper.from_array(np.ones(dim, np.float32), name="ln1_gamma"),
+        numpy_helper.from_array(np.zeros(dim, np.float32), name="ln1_beta"),
+        numpy_helper.from_array(np.ones(dim, np.float32), name="ln2_gamma"),
+        numpy_helper.from_array(np.zeros(dim, np.float32), name="ln2_beta"),
+    ]
+
+    N = helper.make_node          # shorthand: N(op, inputs, outputs, ...)
+    nodes = [
+        # --- self-attention ---
+        N("MatMul", ["tokens", "Wq"], ["Q"]),          # what each token ASKS for
+        N("MatMul", ["tokens", "Wk"], ["K"]),          # what each token OFFERS
+        N("MatMul", ["tokens", "Wv"], ["V"]),          # each token's CONTENT
+        N("Transpose", ["K"], ["Kt"], perm=[0, 2, 1]), # line K up for the match
+        N("MatMul", ["Q", "Kt"], ["scores"]),          # every ask x every offer
+        N("Mul", ["scores", "scale"], ["scaled"]),     # keep scores in Softmax's sweet spot
+        N("Softmax", ["scaled"], ["attn"], axis=-1),   # scores -> attention budget
+        N("MatMul", ["attn", "V"], ["context"]),       # blend content by budget
+        N("MatMul", ["context", "Wo"], ["proj"]),      # mix the gathered info
+        N("Add", ["proj", "tokens"], ["resid1"]),      # residual: keep the original too
+        N("LayerNormalization", ["resid1", "ln1_gamma", "ln1_beta"], ["ln1"]),
+        # --- per-token MLP ---
+        N("MatMul", ["ln1", "Wup"], ["up"]),           # widen 8 -> 32
+        N("Gelu", ["up"], ["act"]),                    # the gate (sec 0.2)
+        N("MatMul", ["act", "Wdown"], ["down"]),       # narrow 32 -> 8
+        N("Add", ["down", "ln1"], ["resid2"]),         # second residual
+        N("LayerNormalization", ["resid2", "ln2_gamma", "ln2_beta"], ["out"]),
+    ]
+
+    graph = helper.make_graph(
+        nodes, "tiny_attention_block",
+        inputs=[helper.make_tensor_value_info(
+            "tokens", TensorProto.FLOAT, [1, seq_len, dim])],
+        outputs=[helper.make_tensor_value_info(
+            "out", TensorProto.FLOAT, [1, seq_len, dim]),
+                 helper.make_tensor_value_info(     # expose attn so we can LOOK at it
+            "attn", TensorProto.FLOAT, [1, seq_len, seq_len])],
+        initializer=inits,
+    )
+    model = helper.make_model(
+        graph, opset_imports=[helper.make_opsetid("", 21)])
+    model.ir_version = 10                      # keep loadable by onnxruntime
+    onnx.checker.check_model(model)            # validate against the ONNX spec
+    return model
+
+
+if __name__ == "__main__":
+    model = build_block()
+    onnx.save(model, "models/tiny_attention.onnx")
+    print(f"saved models/tiny_attention.onnx "
+          f"({len(model.graph.node)} nodes, checker passed)")
+
+    # Run it: 4 random "tokens" in, watch who attends to whom.
+    import onnxruntime as ort
+    sess = ort.InferenceSession("models/tiny_attention.onnx")
+    rng = np.random.default_rng(7)
+    tokens = rng.standard_normal((1, SEQ, DIM)).astype(np.float32)
+    out, attn = sess.run(None, {"tokens": tokens})
+
+    print("\nattention matrix (row = a token asking, col = a token answering):")
+    print(np.round(attn[0], 3))
+    print("row sums:", np.round(attn[0].sum(axis=1), 6))   # softmax -> each row sums to 1
+    print("output shape:", out.shape)
+```
+
+Verified output:
+
+```text
+saved models/tiny_attention.onnx (16 nodes, checker passed)
+
+attention matrix (row = a token asking, col = a token answering):
+[[0.082 0.16  0.323 0.435]
+ [0.182 0.213 0.301 0.303]
+ [0.028 0.052 0.177 0.742]
+ [0.154 0.256 0.162 0.429]]
+row sums: [1. 1. 1. 1.]
+output shape: (1, 4, 8)
+```
+
+That 4×4 matrix *is* attention, visible: row 2 (third token) spends 74.2%
+of its budget on token 3 and nearly ignores tokens 0–1; row 1 spreads its
+budget almost evenly. Every row sums to exactly 1 — §0.5's contract. With
+trained weights these budgets would be *meaningful* (pronouns attending to
+their nouns); with our random stand-ins they're arbitrary — but the
+machinery is identical, and it's the machinery we're porting.
+
+### 9.2 Dissect it — with the tools you already have
+
+The Steps 3–6 scripts took one tiny upgrade: an optional model path
+(`sys.argv[1]`, still defaulting to MNIST — the code blocks above reflect
+it). That's the payoff of writing *generic* graph tools: point them at a
+model family they've never seen —
+
+```bash
+python step4_shape_inference.py models/tiny_attention.onnx
+python step5_spec_table.py     models/tiny_attention.onnx
+python step6_cost_model.py     models/tiny_attention.onnx
+```
+
+— and they just work. Shape inference (verified output):
+
+```text
+[ 0] MatMul   [1, 4, 8], [8, 8]  ->  [1, 4, 8]
+[ 1] MatMul   [1, 4, 8], [8, 8]  ->  [1, 4, 8]
+[ 2] MatMul   [1, 4, 8], [8, 8]  ->  [1, 4, 8]
+[ 3] Transpose [1, 4, 8]  ->  [1, 8, 4]
+[ 4] MatMul   [1, 4, 8], [1, 8, 4]  ->  [1, 4, 4]
+[ 5] Mul      [1, 4, 4], []  ->  [1, 4, 4]
+[ 6] Softmax  [1, 4, 4]  ->  [1, 4, 4]
+[ 7] MatMul   [1, 4, 4], [1, 4, 8]  ->  [1, 4, 8]
+[ 8] MatMul   [1, 4, 8], [8, 8]  ->  [1, 4, 8]
+[ 9] Add      [1, 4, 8], [1, 4, 8]  ->  [1, 4, 8]
+[10] LayerNormalization [1, 4, 8], [8], [8]  ->  [1, 4, 8]
+[11] MatMul   [1, 4, 8], [8, 32]  ->  [1, 4, 32]
+[12] Gelu     [1, 4, 32]  ->  [1, 4, 32]
+[13] MatMul   [1, 4, 32], [32, 8]  ->  [1, 4, 8]
+[14] Add      [1, 4, 8], [1, 4, 8]  ->  [1, 4, 8]
+[15] LayerNormalization [1, 4, 8], [8], [8]  ->  [1, 4, 8]
+```
+
+The shape journey to internalize: `[1,4,8]` tokens → three parallel
+`[1,4,8]` projections → K transposed to `[1,8,4]` → **scores `[1,4,4]`** —
+the tensor stops being "tokens × features" and becomes "tokens × tokens",
+the relationship table — → Softmax keeps it `[1,4,4]` → context returns to
+`[1,4,8]` — back to "tokens × features", now context-enriched — and the
+block exits at exactly its entry shape. Also note nodes [4] and [7] in the
+listing: both MatMul inputs are `[1,...]` *data* tensors, not `[8,8]`-style
+weights — the data×data signature of attention, visible right in the shapes.
+
+Spec table (verified output):
+
+```text
+ #  op               data in       -> out  params
+ 0  MatMul         [1, 4, 8]    [1, 4, 8]      64
+ 1  MatMul         [1, 4, 8]    [1, 4, 8]      64
+ 2  MatMul         [1, 4, 8]    [1, 4, 8]      64
+ 3  Transpose       [1, 4, 8]    [1, 8, 4]       0
+ 4  MatMul         [1, 4, 8]    [1, 4, 4]       0
+ 5  Mul            [1, 4, 4]    [1, 4, 4]       1
+ 6  Softmax        [1, 4, 4]    [1, 4, 4]       0
+ 7  MatMul         [1, 4, 4]    [1, 4, 8]       0
+ 8  MatMul         [1, 4, 8]    [1, 4, 8]      64
+ 9  Add            [1, 4, 8]    [1, 4, 8]       0
+10  LayerNormalization       [1, 4, 8]    [1, 4, 8]      16
+11  MatMul         [1, 4, 8]   [1, 4, 32]     256
+12  Gelu          [1, 4, 32]   [1, 4, 32]       0
+13  MatMul        [1, 4, 32]    [1, 4, 8]     256
+14  Add            [1, 4, 8]    [1, 4, 8]       0
+15  LayerNormalization       [1, 4, 8]    [1, 4, 8]      16
+
+Total learned parameters: 801
+As float32 (4 bytes each): 3.1 KB
+```
+
+Reading it: the two *biggest* parameter holders are the MLP matrices (256
+each) — true of real Transformers too, where the MLP typically holds ~2/3
+of each block's parameters. The attention MatMuls [4] and [7] hold **zero**
+parameters — they multiply data by data. And one tool quirk to catch: node
+[5] "owns 1 parameter" — that's the scale constant, a float initializer, so
+our "float = learned" heuristic misfires. It's a setting, not a weight.
+Heuristics have edge cases; know your tool's.
+
+Cost model (verified output):
+
+```text
+ #  op            MACs  KB moved  MACs/byte  verdict
+ 0  MatMul         256       0.5       0.50  memory-bound
+ 1  MatMul         256       0.5       0.50  memory-bound
+ 2  MatMul         256       0.5       0.50  memory-bound
+ 3  Transpose         0       0.2       0.00  memory-bound
+ 4  MatMul         128       0.3       0.40  memory-bound
+ 5  Mul              0       0.1       0.00  memory-bound
+ 6  Softmax          0       0.1       0.00  memory-bound
+ 7  MatMul         128       0.3       0.40  memory-bound
+ 8  MatMul         256       0.5       0.50  memory-bound
+ 9  Add              0       0.4       0.00  memory-bound
+10  LayerNormalization         0       0.3       0.00  memory-bound
+11  MatMul       1,024       1.6       0.62  memory-bound
+12  Gelu             0       1.0       0.00  memory-bound
+13  MatMul       1,024       1.6       0.62  memory-bound
+14  Add              0       0.4       0.00  memory-bound
+15  LayerNormalization         0       0.3       0.00  memory-bound
+
+Total MACs: 3,328
+  node [0] MatMul: 256 MACs = 7.7% of all compute
+  node [1] MatMul: 256 MACs = 7.7% of all compute
+  node [2] MatMul: 256 MACs = 7.7% of all compute
+  node [4] MatMul: 128 MACs = 3.8% of all compute
+  node [7] MatMul: 128 MACs = 3.8% of all compute
+  node [8] MatMul: 256 MACs = 7.7% of all compute
+  node [11] MatMul: 1,024 MACs = 30.8% of all compute
+  node [13] MatMul: 1,024 MACs = 30.8% of all compute
+```
+
+**Look at the verdict column: every single row is memory-bound.** Not one
+layer above 0.62 MACs/byte. On the CNN, batch-1 memory-boundness was a
+footnote about one MatMul (§6.3, point 3); on a Transformer at batch 1 it
+is *the entire model* — every weight byte fetched, used once, discarded.
+This is the defining hardware fact of LLM-style inference, reproduced
+faithfully by a 3 KB toy.
+
+### 9.3 The seq² story — what changes when sequences grow
+
+This graph has **two kinds of MatMul**, and they scale differently with
+token count S:
+
+- **Weight MatMuls** (Q/K/V/output projections, MLP — nodes 0-2, 8, 11,
+  13): one side is a frozen matrix. Twice the tokens → twice the rows
+  pushed through → cost grows **linearly** with S.
+- **Data×data MatMuls** (scores [4], context [7]): *both* sides grow with
+  S — the scores output is the S×S table itself. Twice the tokens → four
+  times the cost. **Quadratic.**
+
+`step9_seq_scaling.py` rebuilds the same block at increasing S and splits
+the MACs into those two buckets:
+
+```python
+import onnx
+
+from step9_build_attention import build_block
+
+# The two MatMuls whose BOTH inputs are data (not weights): their cost
+# depends on the token count twice.
+ATTENTION_MATMULS = {"scores", "context"}
+
+def elems(shapes, name):
+    n = 1
+    for d in shapes.get(name, []):
+        n *= d
+    return n
+
+print(f"{'tokens':>7} {'linear MACs':>12} {'attention MACs':>15} {'attention share':>16}")
+for seq in (4, 64, 512, 4096):
+    model = build_block(seq_len=seq)
+    inferred = onnx.shape_inference.infer_shapes(model)
+    shapes = {}
+    for vi in (list(inferred.graph.input) + list(inferred.graph.value_info)
+               + list(inferred.graph.output)):
+        shapes[vi.name] = [d.dim_value for d in vi.type.tensor_type.shape.dim]
+    for init in inferred.graph.initializer:
+        shapes[init.name] = list(init.dims)
+
+    linear = attention = 0
+    for node in inferred.graph.node:
+        if node.op_type != "MatMul":
+            continue
+        k = shapes[node.input[0]][-1]              # shared dimension
+        macs = elems(shapes, node.output[0]) * k
+        if node.output[0] in ATTENTION_MATMULS:
+            attention += macs
+        else:
+            linear += macs
+    total = linear + attention
+    print(f"{seq:>7} {linear:>12,} {attention:>15,} {attention/total:>15.1%}")
+```
+
+Verified output:
+
+```text
+ tokens  linear MACs  attention MACs  attention share
+      4        3,072             256            7.7%
+     64       49,152          65,536           57.1%
+    512      393,216       4,194,304           91.4%
+   4096    3,145,728     268,435,456           98.8%
+```
+
+At 4 tokens attention is rounding error; at 512 (a paragraph) it's 91% of
+all compute; at 4096 (a modest LLM context window) it's ~99% — and the S×S
+attention matrix itself is 16.7 million values *per head, per layer* that
+must be produced, softmaxed, and consumed. Double the context, quadruple
+the attention cost. This one table explains why long-context inference is
+expensive and why so much engineering (FlashAttention-style kernels, KV
+caching, sliding windows) attacks exactly this corner of the graph.
+
+Two more porting-relevant contrasts with the CNN:
+
+- **The mid-graph sync points now sit between the heaviest ops.** Softmax
+  [6] sits exactly between the two biggest data×data MatMuls, and each of
+  its rows needs a max and a sum over the *whole row* before emitting
+  anything (§0.5); LayerNorm does the same over each token's features and
+  — unlike BatchNorm — cannot be folded away (§0.6). At S=4 that's
+  trivia; at S=4096 the naive version means materializing the 16.7M-value
+  score matrix to memory, scanning it, and reading it back. Fusing
+  MatMul→Softmax→MatMul into one kernel that never materializes the matrix
+  is precisely what FlashAttention does — and "can your compiler fuse
+  through the softmax" is a real accelerator-evaluation question.
+- **This Transpose is load-bearing.** Node [3] reorders K so the match-up
+  MatMul lines up asks against offers — remove it and the model is wrong.
+  Contrast MNIST's node [9] Reshape (pure export noise, removable). Same
+  op family, opposite verdicts: you classify plumbing by *function*, never
+  by pattern-matching the op name. (The upcoming layout-audit lab is
+  exactly this skill, adversarially.)
+
+### 9.4 Coda — go look at a real one
+
+Open a real pretrained Transformer in <https://netron.app>: search Hugging
+Face for **`all-MiniLM-L6-v2`** (a popular small sentence-embedding model)
+and grab `onnx/model.onnx` (~90 MB) from its Files tab — or any "bert-tiny"
+ONNX export. What to expect, now that you can read it:
+
+- an **embedding front-end** (Gather nodes: token IDs → vectors) we didn't
+  cover — it's a table lookup, no MACs;
+- then **the §9.1 block, six times in a row** — you'll recognize
+  Q/K/V MatMuls, the Transpose, Softmax, the residual Adds, LayerNorms and
+  the MLP pair, wrapped in export noise (extra Reshapes/Casts/split-up
+  attention heads) that you now know how to see through;
+- shape inference and the cost scripts work on it unchanged — try
+  `python step6_cost_model.py <path-to-downloaded-model>` and find the
+  seq² MatMuls in a 600-node graph.
+
+**Remaining from the roadmap:** Step 8 (your porting brief — now you can
+write it for either model, or both) and the layout-shuffling audit lab.

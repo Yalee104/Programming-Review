@@ -7,10 +7,14 @@ onnx_walkthrough/ folder.
 
 See section "Step 5" of onnx_model_walkthrough.md for the annotated table.
 """
+import sys
+
 import onnx
 from onnx import TensorProto
 
-model = onnx.load("models/mnist-12.onnx")
+# Model path can be passed as an argument; defaults to the MNIST model.
+MODEL_PATH = sys.argv[1] if len(sys.argv) > 1 else "models/mnist-12.onnx"
+model = onnx.load(MODEL_PATH)
 inferred = onnx.shape_inference.infer_shapes(model)
 
 # name -> shape, for every tensor we know about (same as step 4).
