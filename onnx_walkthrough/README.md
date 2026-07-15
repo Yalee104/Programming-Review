@@ -16,7 +16,8 @@ onnx_walkthrough/
 ├── models/
 │   ├── mnist-12.onnx             <- the CNN under dissection (26 KB)
 │   ├── tiny_attention.onnx       <- one Transformer block, built by step9 (4 KB)
-│   └── messy_export.onnx         <- the audit-lab patient, built by lab_build_messy (17 KB)
+│   ├── messy_export.onnx         <- Lab 1 audit patient, built by lab_build_messy (17 KB)
+│   └── messy_branches.onnx       <- Lab 2 audit patient, built by lab2_build_messy (16 KB)
 ├── step0_primer/                 <- one runnable script per operator family
 │   ├── 01_matmul_linear.py       <- section 0.1  MatMul / Linear / Gemm
 │   ├── 02_activations.py         <- section 0.2  ReLU / SiLU / GELU
@@ -32,9 +33,11 @@ onnx_walkthrough/
 ├── step6_cost_model.py           <- Step 6: MACs vs bytes moved per node (bottleneck analysis)
 ├── step9_build_attention.py      <- Step 9: build a Transformer block with onnx.helper, run it
 ├── step9_seq_scaling.py          <- Step 9.3: attention MACs vs sequence length (the seq² story)
-├── lab_build_messy.py            <- Lab: build the "sloppy export" audit patient
-├── lab_compare.py                <- Lab: prove two models equivalent (max output diff)
-└── lab_answer_clean.py           <- Lab ANSWER KEY - don't read before doing the audit!
+├── lab_build_messy.py            <- Lab 1: build the "sloppy export" audit patient
+├── lab_compare.py                <- Labs: prove two models equivalent (max output diff)
+├── lab_answer_clean.py           <- Lab 1 ANSWER KEY - don't read before doing the audit!
+├── lab2_build_messy.py           <- Lab 2: build the branch-and-slice audit patient
+└── lab2_answer_clean.py          <- Lab 2 ANSWER KEY - don't read before doing the audit!
 ```
 
 The step3–step6 scripts take an **optional model path** argument (default:
@@ -90,8 +93,10 @@ python step6_cost_model.py
 python step9_build_attention.py     # writes models/tiny_attention.onnx, prints the attention matrix
 python step9_seq_scaling.py
 python step4_shape_inference.py models/tiny_attention.onnx   # any step3-6 tool, on the new model
-python lab_build_messy.py           # writes models/messy_export.onnx (the audit-lab exercise)
+python lab_build_messy.py           # writes models/messy_export.onnx (Lab 1 exercise)
 python lab_compare.py models/messy_export.onnx <your_cleaned_model.onnx>
+python lab2_build_messy.py          # writes models/messy_branches.onnx (Lab 2 exercise)
+python lab_compare.py models/messy_branches.onnx <your_cleaned_model.onnx>
 ```
 
 Expected output for each script is in its comments and, with full

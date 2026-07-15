@@ -2001,12 +2001,11 @@ ONNX export. What to expect, now that you can read it:
   seq² MatMuls in a 600-node graph.
 
 **Remaining from the roadmap:** Step 8 (your porting brief — now you can
-write it for either model, or both) and the layout-shuffling audit lab
-below.
+write it for either model, or both) and the audit labs below.
 
 ---
 
-## Lab — the layout-shuffling audit
+## Lab 1 — the layout-shuffling audit
 
 ### L.1 Mission briefing
 
@@ -2246,7 +2245,283 @@ before shipping.
 
 </details>
 
+### L.6 Post-mortem — "how could I have *known* it was load-bearing?"
+
+The question everyone asks after springing the trap (and the right one to
+ask): the input is NCHW, the convs run NCHW, so the Relu output is NCHW —
+and `w2 [256, 10]` says nothing about what order its 256 rows expect. How
+do you *tell* the flatten needed NHWC order?
+
+**You cannot. That's the point.** No shape, attribute, or type anywhere in
+the file records the ordering a weight was trained against — it's
+invisible metadata, which is exactly why this bug class is dangerous. What
+a working engineer does instead:
+
+1. **Preserve behavior; don't divine intent.** The audit question is never
+   "what order does this weight want?" — it's "**if I delete this node,
+   does the same math still happen?**", which is decidable from the graph
+   alone. The transpose pair cancels → net effect zero → removable. The
+   weight transpose has a constant input → precomputable → removable from
+   runtime. Node 10 reorders values, *nothing cancels it*, and the
+   reordering reaches an order-sensitive consumer (Reshape→MatMul) →
+   deleting it changes which value meets which weight row → keep. The
+   graph you were given IS the specification.
+2. **Pattern recognition.** `Transpose(perm=[0,2,3,1])` immediately before
+   a flatten that feeds a MatMul is the fingerprint of a channels-last-
+   trained model (TensorFlow/Keras) passed through a converter: the convs
+   were rewritten to ONNX's channels-first world, but the classifier
+   weight kept its TF-era row order, so the converter inserts exactly this
+   bridge. Paired transposes hugging a single op are the junk fingerprint;
+   a lone transpose bridging into a flatten is the load-bearing one.
+3. **When reasoning runs out, experiment.** That's why the equivalence
+   harness is a deliverable: propose the removal, build it, compare.
+   `0.0` → removable; anything else → it wasn't.
+
+And see the two orders with your own eyes — same eight values, different
+positions:
+
+```python
+import numpy as np
+
+t = np.arange(8).reshape(1, 2, 2, 2)   # NCHW: 2 channels, each 2x2
+print(t[0, 0])          # channel 0 holds 0..3
+# [[0 1]
+#  [2 3]]
+print(t[0, 1])          # channel 1 holds 4..7
+# [[4 5]
+#  [6 7]]
+
+print(t.reshape(1, -1)[0])                        # NCHW flatten
+# [0 1 2 3 4 5 6 7]      <- all of channel 0, then all of channel 1
+print(t.transpose(0, 2, 3, 1).reshape(1, -1)[0])  # NHWC flatten
+# [0 4 1 5 2 6 3 7]      <- pixel 0 across channels, pixel 1 across, ...
+```
+
+Position 1 holds value `1` in one ordering and value `4` in the other —
+so `w2`'s row 1 recipe would be applied to a different feature. Shapes
+verify *sizes*; they never verify *order*. A tensor has no layout tag —
+"NCHW" and "NHWC" live in the agreement between producer and consumer,
+not in the data.
+
+One more fact, which becomes Lab 2's advanced move: a load-bearing layout
+op *can* still be eliminated — by compensating inside the constant that
+consumes its output (here: permuting `w2`'s 256 rows offline from NHWC
+order to NCHW order). That's not deleting junk; that's *folding a layout
+change into a weight*, which is what layout-aware accelerator compilers
+do all day.
+
 ---
 
-**Still open:** Step 8 — your porting brief. You now have three models to
+## Lab 2 — the branch-and-slice audit
+
+### L2.1 Mission briefing
+
+Second engagement. This customer's CNN has **branches** — the graph
+splits, processes halves separately, and merges — and the export pipeline
+salted it with a different §0.7 crowd: `Slice`, `Concat`, `Pad`,
+`Squeeze`/`Unsqueeze`. Patient: `models/messy_branches.onnx` (committed;
+`1×3×16×16` in, 10 scores out, 27 nodes), built by `lab2_build_messy.py`.
+**Do not read `lab2_answer_clean.py`.** Same deliverables as Lab 1: the
+worksheet verdicts, a cleaned graph, and a max-abs-difference proof.
+
+Fair warning, sharpened by your Lab 1 post-mortem: **the same op pattern
+appears twice in this graph with opposite verdicts.** Nothing about the op
+types distinguishes them — only the actual numbers in their range
+constants do. Read the evidence, not the pattern.
+
+Four quick op-intros so nothing is unfamiliar (all are §0.7-family
+data-movement, none has learned parameters):
+
+- **Slice** — cut a range along given axes. Since opset 10, the range
+  (`starts`, `ends`, `axes`) arrives as *tensor inputs*, usually
+  initializers — so the audit evidence lives in the constants, not in the
+  node's attributes.
+- **Concat** — glue along an axis (§0.7). Legal with a *single* input,
+  in which case it does exactly nothing.
+- **Pad** — add a border (e.g. zeros) around a tensor; `pads` gives the
+  border width per side per axis.
+- **Unsqueeze / Squeeze** — insert / remove a size-1 axis
+  (`[1,16,8,8]` ↔ `[1,16,8,8,1]`). Pure relabeling, like Reshape.
+
+### L2.2 The patient's chart
+
+```bash
+python lab2_build_messy.py           # writes models/messy_branches.onnx
+python step4_shape_inference.py models/messy_branches.onnx
+```
+
+Verified shape-inference output:
+
+```text
+[ 0] Pad      [1, 3, 16, 16], [8]  ->  [1, 3, 16, 16]
+[ 1] Conv     [1, 3, 16, 16], [16, 3, 3, 3], [16]  ->  [1, 16, 16, 16]
+[ 2] Relu     [1, 16, 16, 16]  ->  [1, 16, 16, 16]
+[ 3] Slice    [1, 16, 16, 16], [1], [1], [1]  ->  [1, 8, 16, 16]
+[ 4] Slice    [1, 16, 16, 16], [1], [1], [1]  ->  [1, 8, 16, 16]
+[ 5] Concat   [1, 8, 16, 16], [1, 8, 16, 16]  ->  [1, 16, 16, 16]
+[ 6] MaxPool  [1, 16, 16, 16]  ->  [1, 16, 8, 8]
+[ 7] Slice    [1, 16, 8, 8], [1], [1], [1]  ->  [1, 8, 8, 8]
+[ 8] Slice    [1, 16, 8, 8], [1], [1], [1]  ->  [1, 8, 8, 8]
+[ 9] Conv     [1, 8, 8, 8], [8, 8, 3, 3], [8]  ->  [1, 8, 8, 8]
+[10] Relu     [1, 8, 8, 8]  ->  [1, 8, 8, 8]
+[11] Conv     [1, 8, 8, 8], [8, 8, 1, 1], [8]  ->  [1, 8, 8, 8]
+[12] Relu     [1, 8, 8, 8]  ->  [1, 8, 8, 8]
+[13] Concat   [1, 8, 8, 8], [1, 8, 8, 8]  ->  [1, 16, 8, 8]
+[14] Unsqueeze [1, 16, 8, 8], [1]  ->  [1, 16, 8, 8, 1]
+[15] Squeeze  [1, 16, 8, 8, 1], [1]  ->  [1, 16, 8, 8]
+[16] Slice    [1, 16, 8, 8], [1], [1], [1]  ->  [1, 8, 8, 8]
+[17] Slice    [1, 16, 8, 8], [1], [1], [1]  ->  [1, 8, 8, 8]
+[18] Concat   [1, 8, 8, 8], [1, 8, 8, 8]  ->  [1, 16, 8, 8]
+[19] Conv     [1, 16, 8, 8], [16, 16, 3, 3], [16]  ->  [1, 16, 8, 8]
+[20] Relu     [1, 16, 8, 8]  ->  [1, 16, 8, 8]
+[21] GlobalAveragePool [1, 16, 8, 8]  ->  [1, 16, 1, 1]
+[22] Slice    [1, 16, 1, 1], [1], [1], [1]  ->  [1, 16, 1, 1]
+[23] Reshape  [1, 16, 1, 1], [2]  ->  [1, 16]
+[24] Concat   [1, 16]  ->  [1, 16]
+[25] MatMul   [1, 16], [16, 10]  ->  [1, 10]
+[26] Add      [1, 10], [10]  ->  [1, 10]
+```
+
+The shape table shows every Slice consuming `[1]`-shaped range inputs —
+but not their *values*. That evidence lives in the initializers; extract
+it yourself (verified output below):
+
+```python
+import onnx
+from onnx import numpy_helper
+
+model = onnx.load("models/messy_branches.onnx")
+for init in model.graph.initializer:
+    if init.name.startswith("c"):
+        print(init.name, "=", numpy_helper.to_array(init))
+```
+
+```text
+c0 = [0 0 0 0 0 0 0 0]
+c1 = [0]
+c2 = [8]
+c3 = [16]
+c4 = [1]
+c5 = [4]
+c6 = [ 1 16]
+```
+
+Cross-reference with `step3_list_nodes.py` to see which node consumes
+which constants (e.g. node [3] takes `(x2, c1, c2, c4)` = slice axis 1
+from 0 to 8; node [16] takes `(x15, c2, c3, c4)` = axis 1 from 8 to 16).
+This cross-referencing IS the audit work.
+
+### L2.3 The checklist, extended
+
+Lab 1's four questions still apply. Five new ones for this op family:
+
+5. **Slice…Slice→Concat reassembly:** do the slices cover the whole axis
+   exactly once **and is the Concat in original order**? In-order → the
+   trio reconstructs its own input, remove all three. Out-of-order → it's
+   a *channel permutation* wearing a junk costume — load-bearing (L.6
+   applies: removable only by permuting the consumer's weight offline).
+6. **Full-range Slice:** `starts=0`, `ends ≥` the axis size → no-op.
+7. **Single-input Concat:** an Identity in disguise.
+8. **Pad with all-zero `pads`:** a no-op (check the constant, not the vibe).
+9. **Unsqueeze→Squeeze on the same axis:** a canceling pair.
+
+And the Lab 1 disciplines: slices feeding *different* consumers are a
+branch split (load-bearing); a Concat merging *different* branches is the
+merge (load-bearing); prove every removal with
+`python lab_compare.py models/messy_branches.onnx <your_clean.onnx>`.
+
+### L2.4 The worksheet
+
+Fourteen candidates:
+
+| Node(s) | Op | Evidence to check | Your verdict |
+|---|---|---|---|
+| 0 | Pad | what's in `c0`? | |
+| 3, 4, 5 | Slice, Slice, Concat | ranges + concat order vs `x2` | |
+| 7, 8 | Slice, Slice | who consumes each output? | |
+| 13 | Concat | what is it merging? | |
+| 14, 15 | Unsqueeze, Squeeze | same axis? | |
+| 16, 17, 18 | Slice, Slice, Concat | ranges + concat order vs `x15` | |
+| 22 | Slice | range vs the axis size | |
+| 24 | Concat | how many inputs? | |
+
+### L2.5 Answer key
+
+<details>
+<summary><b>Spoilers — open only after your own audit</b></summary>
+
+**Verdicts:**
+
+| Node(s) | Verdict | Why |
+|---|---|---|
+| 0 Pad | **remove** | `c0` is eight zeros — a border of width 0 on every side of every axis. No-op. |
+| 3, 4, 5 | **remove all three** | slices take `[0:8]` and `[8:16]` of axis 1 and the Concat glues them back **in that original order** — the trio rebuilds `x2` exactly. Three full tensor copies for nothing. |
+| 7, 8 | **keep both** | same ranges — but each output feeds a *different* Conv. This is the branch split (a `Split` op written as two Slices); remove either and a branch loses its input. |
+| 13 | **keep** | the real branch merge: its inputs are two *different* tensors (the 3×3 branch and the 1×1 branch). |
+| 14, 15 | **remove both** | Unsqueeze then Squeeze of the same size-1 axis (`c5`=[4]): a canceling pair, the Reshape-family cousin of Lab 1's transpose pair. |
+| 16, 17, 18 | **the trap — keep** (or fold, below) | *identical op pattern to nodes 3-5*, but read the ranges: node [16] takes `[8:16]`, node [17] takes `[0:8]`, and the Concat puts the top half FIRST. The trio doesn't rebuild `x15` — it **rotates the channels** `[0..15] → [8..15, 0..7]`, and `w3` was defined against the rotated order. Junk pattern, load-bearing function. |
+| 22 | **remove** | slice `[0:16]` on an axis of size 16 — full range, no-op. |
+| 24 | **remove** | Concat with one input = Identity. |
+
+Nodes 3-5 vs 16-18 side by side is the whole lesson of this lab: **the op
+pattern is identical; only the constants differ.** `(0:8)+(8:16)`
+reassembles; `(8:16)+(0:8)` permutes. You cannot audit by op name, and
+now you can't even audit by *subgraph shape* — you must read the actual
+numbers.
+
+**Cleanups** (`lab2_answer_clean.py` builds all three from the patient's
+extracted weights; verified outputs):
+
+```text
+models/messy_branches.onnx  vs  models/clean2_conservative.onnx
+  max abs difference: 0.0                      <- bit-exact. 27 -> 19 nodes
+models/messy_branches.onnx  vs  models/clean2_advanced.onnx
+  max abs difference: 4.76837158203125e-07     <- see below. 27 -> 16 nodes
+models/messy_branches.onnx  vs  models/clean2_naive.onnx
+  max abs difference: 2.0557074546813965       <- the trap, sprung. wrong model
+```
+
+- **Conservative** (the reference answer): remove the seven junk nodes,
+  keep the swap trio. Bit-exact, done.
+- **Advanced** (L.6's folding move, executed): remove the swap trio too,
+  and compensate by permuting `w3`'s *input-channel axis* offline with the
+  same `[8..15, 0..7]` permutation (`W["w3"][:, perm, :, :]`). Note the
+  measured difference: **4.8e-07, not 0.0.** The math is identical, but
+  the head Conv now sums its 16 input channels in a different order, and
+  float addition is not associative — you get rounding-level drift. This
+  is the honest boundary of the "exactly 0.0" rule: pure *removals* must
+  be bit-exact; deliberate *re-associations* (weight folding, fusion,
+  layout changes) are allowed float-noise differences that you must
+  measure, bound, and disclose — never wave through. Know which kind of
+  change you're making.
+- **Naive** (the trap): drop the trio without compensating. Runs
+  perfectly, wrong by 2.06 — four thousand times the legitimate rounding
+  noise. The magnitude gap is how you tell "different arithmetic order"
+  (1e-7) from "different arithmetic" (units).
+
+**What the cleanup bought:** identical 299,168 MACs; bytes moved per
+inference **720.7 KB → 618.5 KB** conservative (−14%), **598.5 KB**
+advanced (−17%) — plus restored fusion adjacency around the head Conv.
+
+**The industry-tool cross-check, with a twist** — Lab 1's onnxsim run
+matched the manual audit; here it does not:
+
+```bash
+python -m onnxsim models/messy_branches.onnx models/messy_branches_simplified.onnx
+```
+
+Verified: onnxsim removes the zero-Pad and the single-input Concat, fuses
+MatMul+Add→Gemm — and **leaves 24 nodes**, keeping the reassembly trio
+[3-5], the Unsqueeze/Squeeze pair [14-15], and the full-range Slice [22]
+that a manual audit removes (all bit-exact-safe removals, verified by
+lab_compare). Lab 1's lesson was "a correct tool and a correct audit
+agree"; Lab 2's is the counterweight: **the tool has gaps — pattern
+libraries miss what a human tracing values catches.** Run the tool, take
+its free wins, then audit what's left. That's the job.
+
+</details>
+
+---
+
+**Still open:** Step 8 — your porting brief. You now have four models to
 choose from.

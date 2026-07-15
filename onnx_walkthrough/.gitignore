@@ -3,3 +3,5 @@ __pycache__/
 models/clean_correct.onnx
 models/clean_naive.onnx
 models/messy_simplified.onnx
+models/clean2_*.onnx
+models/messy_branches_simplified.onnx
