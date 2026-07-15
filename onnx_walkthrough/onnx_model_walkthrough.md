@@ -968,7 +968,154 @@ pipeline as a few thousand values (28×28×8 ≈ 6.3K at its peak) and exits as
 Conv2: 3,200, classifier: 2,560). Step 5 turns exactly this into a
 per-layer table, and Step 6 turns it into performance reasoning.
 
-### 4.4 Cross-check: run the model for real
+### 4.4 What the classifier weight is, and where `Parameter193` comes from
+
+Nodes [10]+[11] are the whole classifier, and they are just one equation
+(§0.1):
+
+```text
+scores = features @ W + b
+```
+
+- `features` — the `1×256` numbers the conv stack produced (node [8]'s output).
+- `W` — the **weight matrix**, shape `[256, 10]`. *This is `Parameter193`.*
+- `b` — the bias, one number per class (`Parameter194`).
+- `scores` — `1×10`, one number per digit; the biggest one wins.
+
+**Why the weight is `256×10` — the shape is forced, not chosen.** You don't
+get to pick this shape freely. Two facts pin it down completely: 256 features
+come *in*, and you need 10 scores going *out* (one per digit — that `10` is
+the only real design decision, "I want to recognize 10 digits"). The matmul
+rule is that the inner dimensions must match and cancel, leaving the outer
+two:
+
+```text
+[1 × 256] @ [256 × 10]  ->  [1 × 10]
+     └───────┘   the 256s must match and cancel
+ └─┘            └──┘       the outer 1 and 10 survive
+```
+
+The only matrix that bridges `256 → 10` this way is `256×10`. Any other shape
+is not "worse" — it simply won't multiply:
+
+```python
+import numpy as np
+
+features = np.zeros((1, 256))          # 256 features for one image
+
+W_right = np.zeros((256, 10))          # the ONLY shape that takes 256 in -> 10 out
+print("features @ W[256,10] ->", (features @ W_right).shape, " (10 class scores)")
+
+for bad in [(10, 256), (256, 256), (128, 10)]:
+    try:
+        (features @ np.zeros(bad)).shape
+    except ValueError as e:
+        print(f"features @ W{bad}  -> ERROR: {str(e).split(':')[0]}")
+```
+
+Verified output:
+
+```text
+features @ W[256,10] -> (1, 10)  (10 class scores)
+features @ W(10, 256)  -> ERROR: matmul
+features @ W(128, 10)  -> ERROR: matmul
+```
+
+Note the `256` is *inherited* (it's whatever the conv stack happened to
+emit — `16 channels × 4 × 4`) while the `10` is *chosen*. Change the conv
+architecture and the `256` changes with it; the `10` stays put.
+
+**Where do those 2,560 numbers come from? Training.** Nobody writes a weight
+matrix by hand. It starts as random noise and is *learned* from labeled
+examples: run the equation, measure how wrong the scores are against the
+answer key, and nudge every number in `W` a little in the direction that
+reduces the mistakes (gradient descent). Repeat thousands of times. Here is
+that happening on a tiny 3-class stand-in (2 features → 3 classes, so `W` is
+`[2, 3]` — same story as `[256, 10]`, just small enough to print):
+
+```python
+import numpy as np
+rng = np.random.default_rng(42)
+
+# Same equation as MNIST-12 nodes [10]+[11]:  scores = features @ W + b
+# 3 classes of 2-D points (overlapping blobs), small lr so we can WATCH it learn.
+centers = np.array([[1.2, 1.2], [-1.2, 1.2], [0.0, -1.2]])
+N = 150
+X = np.repeat(centers, N, axis=0) + rng.standard_normal((3*N, 2))*0.9
+y = np.repeat([0, 1, 2], N)                 # the answer key (true labels)
+
+W = rng.standard_normal((2, 3)) * 0.01      # weight matrix: [n_features=2, n_classes=3]
+b = np.zeros(3)
+
+def accuracy(W, b):
+    return ((X @ W + b).argmax(1) == y).mean()
+
+print("W right after random init:\n", W.round(3))
+print(f"accuracy with random W: {accuracy(W,b):.1%}   (3 classes -> chance is 33%)\n")
+
+lr = 0.05
+Y = np.eye(3)[y]                            # one-hot labels
+for step in range(600):
+    scores = X @ W + b
+    p = np.exp(scores - scores.max(1, keepdims=True)); p /= p.sum(1, keepdims=True)
+    grad = p - Y                            # how wrong we are, per class
+    W -= lr * (X.T @ grad) / len(X)         # push W to reduce the wrongness
+    b -= lr * grad.mean(0)
+    if step in (0, 5, 50, 200, 599):
+        print(f"  step {step:3}: accuracy {accuracy(W,b):.1%}")
+
+print("\nW after training:\n", W.round(2))
+print("\nEach COLUMN of W is one class's 'wish list' over the 2 features:")
+for j in range(3):
+    print(f"  class {j} column {W[:,j].round(2)}  vs its true center {centers[j]}")
+```
+
+Verified output:
+
+```text
+W right after random init:
+ [[ 0.004  0.001 -0.001]
+ [ 0.016 -0.006  0.021]]
+accuracy with random W: 20.7%   (3 classes -> chance is 33%)
+
+  step   0: accuracy 80.0%
+  step   5: accuracy 88.9%
+  step  50: accuracy 89.8%
+  step 200: accuracy 90.2%
+  step 599: accuracy 90.2%
+
+W after training:
+ [[ 1.26 -1.41  0.16]
+ [ 0.88  1.1  -1.95]]
+
+Each COLUMN of W is one class's 'wish list' over the 2 features:
+  class 0 column [1.26 0.88]  vs its true center [1.2 1.2]
+  class 1 column [-1.41  1.1 ]  vs its true center [-1.2  1.2]
+  class 2 column [ 0.16 -1.95]  vs its true center [ 0.  -1.2]
+```
+
+Two things to read off that output:
+
+- **Random `W` is useless** (20.7%, worse than the 33% chance line); the
+  *trained* `W` works (90.2% — capped only because the blobs overlap). The
+  weight matrix is the entire difference between guessing and classifying.
+- **The learned columns are interpretable.** Each class's column ended up
+  pointing toward that class's true location in feature space — nobody
+  supplied those directions; training *discovered* them from the labeled
+  data. Read `W[:, j]` (column `j`) as "what class `j` looks like, expressed
+  in the features." For MNIST, `Parameter193[:, 3]` is literally "what a
+  handwritten 3 looks like" in terms of the 256 conv features.
+
+So `Parameter193` is exactly this `W`, scaled up (`[256, 10]`, 2,560 numbers)
+and pre-trained: Microsoft ran a loop like the one above over ~60,000 labeled
+digit images — training the two Conv filter banks *and* this classifier matrix
+together — then **froze** the final numbers and saved them into the `.onnx`
+file as a constant. At inference no learning happens; those frozen numbers
+just get multiplied against your image's features. (And the
+`[16,4,4,10]`-vs-`[256,10]` wrinkle from §3.3 is only about how that frozen
+matrix is *stored* — see the note at node [9] above.)
+
+### 4.5 Cross-check: run the model for real
 
 Static analysis says the output should be `[1, 10]`. Trust but verify — run
 the actual pipeline with onnxruntime on a dummy input:
