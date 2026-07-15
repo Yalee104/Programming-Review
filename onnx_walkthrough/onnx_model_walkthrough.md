@@ -1160,23 +1160,42 @@ the attributes we read programmatically (kernel_shape, strides, pads...).
 
 ### 4.6 FAQ — why does node [9] reshape a *weight*, and where does `[16, 4, 4, 10]` come from?
 
-The classifier needs 2,560 weights — one per (feature, digit) pair, i.e. a
-`[256, 10]` matrix. `Parameter193` holds exactly those numbers, just labeled
-differently. Recall that the 256 features aren't an anonymous flat list:
-each is really "channel c at position (y, x)" of the `[1, 16, 4, 4]` tensor.
-The training framework (CNTK) defined the dense layer *directly on that 3-D
-tensor*, so it stored the weight in its natural coordinates:
-`[16, 4, 4, 10]` = "the weight connecting (channel, y, x) to digit d." Same
-2,560 numbers, addressed by 4-D coordinates instead of flat indices — like
-the same bytes viewed through a different struct definition.
+**Start from what the layer IS.** Nodes [10]+[11] are a **fully connected
+layer** (a.k.a. Linear/Dense — §0.1) with `in_features = 256` and
+`out_features = 10`. The 10 is the design decision — we want 10 digit
+classes out. The 256 is inherited — it's however many features the conv
+stack happens to emit. And a fully connected layer is just the equation:
 
-ONNX's `MatMul` only speaks 2-D matrices, so at export time the exporter had
-two options: flatten the constant **once, offline**, and store `[256, 10]`
-in the file (the right thing — a constant's flattened form is also a
-constant), or emit a Reshape node that flattens it **at runtime, every
-inference**. This exporter did the lazy second thing. Deployment tools
-(onnx-simplifier, onnxruntime's graph optimizer) recognize "Reshape of a
-constant," compute it once, and delete the node — constant folding.
+```text
+scores = x @ W + b
+```
+
+During training, `x` is `1×256` and the required result is `1×10` — so by
+the matmul rule (inner dimensions must match and cancel: `[1×256] @
+[256×10] → [1×10]`, see the demo in §4.4), **`W` is naturally `256×10`.
+Nothing else fits.** That `256×10` matrix — 2,560 trained numbers, one per
+(feature, digit) pair — is what `Parameter193` holds. So far, no mystery:
+every fully connected layer everywhere works exactly like this.
+
+**Then why is it stored as `[16, 4, 4, 10]`?** Pure labeling. The 256
+inputs to this layer aren't an anonymous flat list — each one is really
+"channel c at position (y, x)" of the `[1, 16, 4, 4]` tensor coming off the
+last pool (16 × 4 × 4 = 256). The training framework (CNTK) let the dense
+layer consume that tensor *without an explicit flatten in the model
+definition*, so it kept `W`'s rows addressed by their original coordinates:
+`[16, 4, 4, 10]` = "the weight connecting (channel, y, x) to digit d."
+**Same 2,560 numbers, same layer** — just addressed with 4-D coordinates
+instead of flat row indices, like the same bytes viewed through a different
+struct definition.
+
+**And why a Reshape node at runtime?** ONNX's `MatMul` only speaks 2-D
+matrices, so at export time the weight had to become `[256, 10]`. The
+exporter had two options: flatten the constant **once, offline**, and store
+`[256, 10]` in the file (the right thing — a constant's flattened form is
+also a constant), or emit a Reshape node that flattens it **at runtime,
+every inference**. This exporter did the lazy second thing. Deployment
+tools (onnx-simplifier, onnxruntime's graph optimizer) recognize "Reshape
+of a constant," compute it once, and delete the node — constant folding.
 
 The subtle part worth internalizing: **the two Reshapes must agree on
 ordering.** Node [8] flattens the data channel-then-row-then-column; node
