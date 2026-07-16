@@ -339,3 +339,102 @@ max representable Q16.16 value = INT32_MAX/65536 = 32768.0
 - In-range products (`1.5×2.0`) are unaffected — saturation is a no-op there.
 
 ---
+
+## 2. Branchless / SIMD-friendly C++
+
+**Why branches are expensive on a PE array.** A 2D array of PEs runs in
+lockstep — every PE (lane) executes the *same* instruction each cycle on its own
+data (SIMD/SIMT). A data-dependent `if` (one whose condition depends on the
+per-lane value) breaks that: different lanes want different paths. The hardware
+can't run two instructions at once, so it **executes both sides and masks off
+the wrong one** (predication) — you pay for both paths — or it *serializes*
+lanes. Either way a per-lane branch is pure loss. (On a scalar CPU the cost is
+different but related: a mispredicted branch flushes the pipeline.) So the idiom
+flips: instead of *choosing* which work to do, you **do all the work and select
+the result with a mask**.
+
+**The one trick that powers everything: the sign mask.** An *arithmetic* right
+shift of a 32-bit signed int by 31 copies the sign bit into every bit:
+
+```
+x <  0   ->  x >> 31 == 0xFFFFFFFF == -1   (all ones)
+x >= 0   ->  x >> 31 == 0x00000000 ==  0   (all zeros)
+```
+
+An all-ones mask ANDed with a value keeps it; an all-zeros mask kills it. That
+single fact gives branchless ReLU, abs, min/max, clamp, and select. The
+operators used below:
+- `x >> 31` — arithmetic shift (on signed `int32_t`, g++ shifts in the sign bit).
+- `&`, `|`, `^`, `~` — bitwise AND / OR / XOR / NOT.
+- `-(cond)` — turns a 0/1 boolean into `0` / all-ones (`-1`), i.e. a **mask**.
+- `a ^ ((a ^ b) & mask)` — the **select** identity: equals `a` when `mask` is all
+  ones, `b` when `mask` is `0` (because `x ^ 0 = x` and `a ^ (a ^ b) = b`).
+
+### Worked example (compiled & verified)
+
+```cpp
+#include <cstdint>
+
+int32_t relu_branchless(int32_t x){ return x & ~(x >> 31); }   // max(0,x)
+// x>=0: (x>>31)=0, ~0=all-ones, x & all-ones = x
+// x<0 : (x>>31)=-1, ~(-1)=0,    x & 0        = 0
+
+int32_t abs_branchless(int32_t x){ int32_t m = x >> 31; return (x ^ m) - m; }
+// x>=0: m=0  -> (x^0)-0   = x
+// x<0 : m=-1 -> (x^-1)-(-1) = (~x)+1 = -x   (two's-complement negate)
+
+int32_t select(int32_t cond, int32_t a, int32_t b){           // cond?a:b, cond in {0,1}
+    int32_t mask = -(cond & 1);                               // 0 or 0xFFFFFFFF
+    return b ^ ((a ^ b) & mask);
+}
+
+int32_t imin(int32_t a,int32_t b){ return b ^ ((a ^ b) & -(a < b)); }  // a<b ? a : b
+int32_t imax(int32_t a,int32_t b){ return a ^ ((a ^ b) & -(a < b)); }  // a<b ? b : a
+int32_t clamp(int32_t x,int32_t lo,int32_t hi){ return imax(lo, imin(hi, x)); }
+```
+
+Verified output:
+
+```
+relu(-5)=0  abs(-5)=5
+relu(-1)=0  abs(-1)=1
+relu(0)=0   abs(0)=0
+relu(1)=1   abs(1)=1
+relu(7)=7   abs(7)=7
+select(1,10,20)=10  select(0,10,20)=20
+clamp(-9,[-3,10])=-3   clamp(-3,[-3,10])=-3   clamp(5,[-3,10])=5   clamp(42,[-3,10])=10
+```
+
+**Walk one through.** `relu(-5)`: `-5 >> 31 = -1` (all ones), `~(-1) = 0`,
+`-5 & 0 = 0`. `relu(7)`: `7 >> 31 = 0`, `~0 = -1` (all ones), `7 & -1 = 7`. No
+branch taken in either case — the same three instructions run for every input,
+which is exactly what a PE lane wants.
+
+**Reality check:** you rarely hand-roll `imin`/`imax` — write `x < 0 ? 0 : x` or
+`std::min/std::max` and let `-O2` emit a `cmov`/`vpmax` with no branch. The point
+is to (1) recognize which ops are branch-free-able and (2) know the mask
+identities for the cases the compiler *won't* vectorize (custom saturation,
+per-lane conditional accumulate, masked writes).
+
+### Exercises
+
+**2.1 (easy) — `signum`.** Write a branchless `int signum(int32_t x)` returning
+`-1, 0, +1` for negative / zero / positive. (Hint: two comparisons, no masks
+needed — `(x > 0) - (x < 0)`; explain *why* that works, and what type the
+comparisons produce.)
+
+**2.2 (medium) — saturate an accumulator to int8.** After an INT8 matmul you hold
+a wide `int32_t acc` and must clamp it to the int8 range `[-128, 127]` before
+storing (this is the "requantize saturate" step). Write a **branchless**
+`int8_t sat8(int32_t acc)`. Then write `relu_sat8` that fuses ReLU + saturate
+(clamp to `[0, 127]`). Test with `-500, -128, 0, 100, 127, 500`.
+
+**2.3 (interview) — one-pass branchless argmax.** Given `const int32_t* v, int n`,
+return the **index of the maximum** element (first occurrence on ties), with **no
+`if`/`?:` in the loop body** — update the running max *and* the running index
+using masks. This is the top-1 reduction a PE array does for classification.
+Test with `{3, 1, 4, 1, 5, 9, 2, 6}` (expect index 5) and a tie like
+`{7, 2, 7, 1}` (expect index 0). (Hint: `int32_t gt = -(v[i] > best);` gives a
+mask; use it to conditionally overwrite both `best` and `best_idx`.)
+
+---
