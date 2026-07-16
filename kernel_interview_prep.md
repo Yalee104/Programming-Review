@@ -28,6 +28,70 @@ Quadric/Chimera-style operator kernels this tutorial builds toward.
 
 ## 1. Fixed-Point Arithmetic (Q-format)
 
+### 1.0 First principles — think in *cents* (start here)
+
+You already do fixed-point with money. A register never stores `1.50`; it stores
+**150 cents**, a plain integer, under one agreed rule: *the integer is in
+hundredths of a dollar*. That agreed multiplier — **100** — is the **scale**.
+
+- store: `dollars × 100` → `1.50 × 100 = 150`
+- read back: `stored / 100` → `150 / 100 = 1.50`
+
+**Qm.n is the identical trick with a power-of-two scale instead of 100.** The
+name just says where the binary point is frozen: `n` fractional bits → scale
+`2^n`.
+
+| Q-format | frac bits `n` | scale `2^n` | stored integer means… |
+|----------|--------------|-------------|-----------------------|
+| Q8.8   | 8  | 256   | 256ths |
+| Q16.16 | 16 | 65536 | 65536ths |
+| Q24.8  | 8  | 256   | 256ths (more integer room) |
+
+So `1.5` in Q16.16 = `1.5 × 65536 = 98304`, exactly like `$1.50 = 150 cents`.
+
+**Add** just works — both are "in cents": `150 + 200 = 350` = $3.50.
+
+**Multiply needs a shift RIGHT.** `$1.50 × $2.00 = $3.00 = 300 cents`. But the
+integers give `150 × 200 = 30000` — off by **100×**, because each operand had the
+scale baked in, so the product has it **twice**:
+```
+150 × 200 = (1.50×100) × (2.00×100) = 3.00 × 100 × 100 = 30000   (two scales)
+30000 / 100 = 300 cents = $3.00                                   (remove one)
+```
+Dividing by the scale `2^n` in binary *is* `>> n`. → `q_mul = (a*b) >> n`.
+
+**Divide needs a shift LEFT.** `$1.50 / $2.00 = 0.75`. Integers give
+`150 / 200 = 0` — the scales **cancel**, leaving a bare ratio with *no* scale:
+```
+150 / 200 = (1.50×100)/(2.00×100) = 0.75   (both scales cancelled → wrong units)
+(150 × 100) / 200 = 15000/200 = 75 cents = $0.75   (pre-multiply to keep one)
+```
+Multiplying the numerator by `2^n` in binary is `<< n`. → `q_div = (a<<n)/b`.
+
+**What a shift literally does** (like decimal, but ×2 per place):
+```
+5 = 101(bin);  101<<1 = 1010 = 10 (×2);  101<<2 = 10100 = 20 (×4);  1010>>1 = 101 = 5 (÷2)
+```
+So `<<16` = ×65536 and `>>16` = ÷65536 — exactly the scale ops. Right shift
+**truncates** (`7>>1 = 3`, the .5 dropped), so we add half a unit `2^(n-1)`
+before shifting to round to nearest.
+
+**The bits of `1.5` (=98304) in Q16.16**, split at the frozen point:
+```
+98304 = 0000000000000001 . 1000000000000000
+        └─ 16 int bits ─┘   └─ 16 frac bits ─┘
+              = 1                 = 0.5          →  1 + 0.5 = 1.5
+```
+`98304 >> 16 = 1` (integer part); `98304 & 0xFFFF = 32768`, and
+`32768/65536 = 0.5` (fraction). The point never moves — that's why it's
+**fixed**-point.
+
+> **One-liner:** a Qm.n value is an integer measured in units of `1/2^n` (cents
+> are units of `1/100`); add works directly, multiply doubles the scale so `>>n`
+> fixes it, divide cancels the scale so `<<n` preserves it.
+
+### 1.1 The same thing, stated formally
+
 **What "fixed-point" is.** A float stores a number as *mantissa × 2^exponent* —
 the binary point *floats* to wherever the value needs it, and dedicated FPU
 hardware tracks it. On a core with **no FPU**, we instead pick *one* fixed
