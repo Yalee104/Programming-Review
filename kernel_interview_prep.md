@@ -1291,4 +1291,170 @@ adjacent ops would you **fuse** within each array subgraph, and why? (d) The fir
 Conv output is large; TopK keeps only 100 rows — does that change *where* you'd
 prefer to cut to reduce DDR traffic?
 
+### Solutions 5.1–5.3 (verified)
+
+**5.1 — HardSigmoid = clamp(0.2·x + 0.5, 0, 1).** Primitives: **scale** → **add** →
+**clamp**.
+
+```cpp
+int32_t hardsigmoid_q(int32_t x){
+    int32_t t = q_mul(x, to_q(0.2));           // primitive: scale
+    t = t + to_q(0.5);                         // primitive: add (broadcast const)
+    return imax(0, imin(ONE, t));              // primitive: clamp to [0,1]
+}
+```
+```
+x=-4.0 fixed=0.0000  x=-1.0 fixed=0.3000  x=0.0 fixed=0.5000  x=1.0 fixed=0.7000  x=4.0 fixed=1.0000
+```
+(matches the float formula exactly at these points).
+
+**5.2 — Softmax.** `softmax(v)_i = e^(v_i − m) / Σ_j e^(v_j − m)`, `m = max(v)`.
+Primitive breakdown:
+- `m = max(v)` — **reduction**.
+- `v_i − m` and `e^(·)` — **elementwise** (the `−m` shift keeps `exp`'s argument
+  ≤ 0, so it can't overflow — numerical stability).
+- `Σ e^(·)` — **reduction**.
+- `/ sum` — **elementwise** (broadcast the scalar denominator).
+
+```cpp
+void softmax_f(const double* v, int n, double* out){
+    double m = v[0];
+    for(int j=1;j<n;j++) if(v[j] > m) m = v[j];        // reduction: max
+    double s = 0;
+    for(int j=0;j<n;j++){ out[j] = std::exp(v[j]-m); s += out[j]; } // elementwise + reduction
+    for(int j=0;j<n;j++) out[j] /= s;                  // elementwise divide
+}
+// softmax([2,1,0.1,3]) = 0.2361 0.0869 0.0353 0.6418   (verified)
+```
+
+**The awkward step is `exp` — no FPU has it.** Realize it in fixed-point via
+`e^x = 2^(x·log2 e)`: split the exponent into an integer part (a **shift**) and a
+fractional part in `[0,1)` (a small **polynomial** or LUT). For softmax's range
+`x ≤ 0`:
+
+```cpp
+int32_t exp_q(int32_t x){                      // Q16.16, x <= 0
+    int32_t y = q_mul(x, to_q(1.4426950409));  // y = x*log2(e)
+    int32_t i = y >> FRAC;                      // floor -> integer part (<= 0)
+    int32_t f = y - (i << FRAC);                // frac in [0,1)
+    int32_t p = to_q(0.0555);                   // 2^f ~= Horner(1, .6931, .2402, .0555)
+    p = q_mul(p, f) + to_q(0.2402);
+    p = q_mul(p, f) + to_q(0.6931);
+    p = q_mul(p, f) + ONE;                       // p = 2^f
+    int sh = -i;
+    return (sh >= 31) ? 0 : (p >> sh);           // 2^i * 2^f (shift for the integer part)
+}
+// exp(-1.0) fixed=0.36761 vs std::exp 0.36788 ; exp(-2.0) 0.13533 vs 0.13534  (~1e-3, verified)
+```
+**Fusible steps:** the `−m` subtract and the `exp` sweep the same data, so fuse
+them into one pass; the final divide fuses with whatever consumes the output.
+
+**5.3 — Partition `Conv → Add → HardSwish → TopK(k=100) → Gather → Conv`** (TopK
+unsupported).
+- **(a)** `[Conv → Add → HardSwish]` = **array subgraph 1** → **host: TopK** →
+  `[Gather → Conv]` = **array subgraph 2**. Two cuts (array→host after HardSwish,
+  host→array after TopK).
+- **(b)** 2 crossings. Each is a **DDR round-trip + sync**, and the array sits
+  **idle** while the host runs the serial TopK — the handoff latency, not the TopK
+  math, usually dominates.
+- **(c)** In subgraph 1 fuse `Conv + Add(bias) + HardSwish` (accumulator in
+  registers, add bias, apply HardSwish, write **once**). In subgraph 2 fuse the
+  `Gather` into the following `Conv`'s operand load (gather straight into im2col) so
+  the gathered tensor is never separately materialized.
+- **(d) Yes — cut where the tensor is smallest.** TopK only needs the **scores** to
+  select and returns **100 indices**. Send just the scores to the host (small),
+  receive 100 indices back (tiny), and keep the **large** feature tensor resident
+  on-chip for the Gather to index. Shipping the whole large tensor host-and-back
+  would move orders of magnitude more DDR. **Cross only what the unsupported op
+  actually needs.**
+
+---
+
+## 6. Debugging a Port
+
+A ported layer fails in one of two ways: **numerically wrong** or **too slow**.
+Both have a methodical recipe — don't guess, read the signal.
+
+### Numerically wrong — golden diff → bisect → read the signature
+
+1. **Golden reference.** Run the original (float ONNX / PyTorch) and dump the
+   expected output. Diff against your kernel: `max |err|`, and *where* it occurs.
+2. **Bisect the pipeline.** Dump intermediate tensors and compare layer by layer
+   to localize *which* op first diverges. Halve the search each time.
+3. **Read the error signature** — the *shape* of the error names the bug:
+
+| signature | likely bug |
+|-----------|-----------|
+| constant offset everywhere | bias / **zero-point** dropped or wrong |
+| error grows with magnitude | wrong **Q-scale / shift** (scale mismatch) |
+| scattered **±1 LSB** | **rounding** mode (truncation vs round, tie handling) |
+| occasional **huge/negative** values | **overflow / missing saturation** (wrap) |
+| output shuffled or garbage | **layout / indexing** (im2col order, transpose, strides) |
+| only **edges** wrong | **padding / stride / bounds** off-by-one |
+| unsigned looks negative | **signed vs unsigned** (int8 vs uint8, zero-point) |
+
+4. **Shrink the input.** Reproduce on a `1×1` / identity-kernel case you can
+   compute by hand — the smallest failing input localizes the bug fastest.
+
+### Worked example — two planted bugs, found by signature (verified)
+
+A ported `requant` that (bug 1) **truncates** instead of rounding and (bug 2)
+**drops saturation** (raw narrowing cast). Diff against the golden `requant_ref`:
+
+```
+acc   ref   bug   err   note
+  13     7     6    -1   <-- 1 LSB: rounding      (exact 6.5)
+  27    14    13    -1   <-- 1 LSB: rounding      (exact 13.5)
+  41    21    20    -1   <-- 1 LSB: rounding      (exact 20.5)
+ 260   127  -126  -253   <-- huge: overflow/wrap  (exact 130.0)
+  -7    -3    -4    -1   <-- 1 LSB: rounding
+```
+
+The signature reads straight off: the pervasive **−1** on `.5` inputs ⇒ missing
+rounding bias; the single **−253** (127 vs −126) ⇒ `130` overflowed int8 and
+**wrapped** because saturation was dropped. Fix = add `+2^(shift−1)` before the
+shift, and route the narrow through `sat8`. Re-diff → zero error. (These are the
+two bugs from Topics 1 and 3 — they are *the* most common fixed-point port bugs.)
+
+### Too slow — measure, don't guess
+
+1. **Roofline first (Topic 4):** compute the op's arithmetic intensity, measure
+   achieved GB/s and GOPS. Is it memory- or compute-bound? That decides the fix.
+2. **If memory-bound:** check access pattern (strided? → reorder loops / SoA),
+   tiling (working set fit L2? → block), fusion (extra passes? → fuse),
+   double-buffering (stalls on DMA? → prefetch).
+3. **If compute-bound but below peak:** did it **vectorize**? (check the asm / use
+   `-O3 -march=native` / restructure the inner loop). Are the PEs kept busy, or is
+   the array under-utilized by a bad dataflow?
+4. **Sanity-check against theory:** `MACs / peak_MAC_rate` is your compute floor;
+   `bytes / bandwidth` is your memory floor. If you're far above both, something is
+   serialized (a hidden dependency, a scalar tail, a host handoff).
+
+### Exercises
+
+**6.1 (easy) — name the bug from the signature.** For each, give the most likely
+cause and a one-line confirmation test: (a) every output is exactly `+5` vs
+reference; (b) outputs are correct in the interior but wrong in the last row and
+last column; (c) output values look randomly permuted but the *set* of values is
+about right; (d) error is tiny for small activations but grows for large ones.
+
+**6.2 (medium) — find the bug.** This im2col-based conv gives garbage. Find and fix
+it (one line):
+```cpp
+// input [C_in][H][W], weight stored [C_out][C_in][KH][KW]
+for(int ic=0; ic<C_in; ic++)
+  for(int kx=0; kx<KW; kx++)          // <-- note the loop order
+    for(int ky=0; ky<KH; ky++)
+      col[t++] = in[ic*H*W + (oy+ky)*W + (ox+kx)];
+// then out = dot(col, weight[oc], C_in*KH*KW)
+```
+(Hint: §3.4's "the rule that makes it correct.")
+
+**6.3 (interview) — diagnose "too slow".** Your INT8 `3×3` conv on a big feature
+map runs at **4% of peak**. Peak `10 TOPS`, DDR `50 GB/s`. The inner loop reads the
+weight from DDR every MAC and writes each output the moment it's computed. (a) Is it
+memory- or compute-bound — how do you tell in one measurement? (b) Name three
+concrete changes (from Topics 2–5) and which bottleneck each attacks. (c) After
+fixing, what roughly caps your achievable speedup, and why?
+
 ---
