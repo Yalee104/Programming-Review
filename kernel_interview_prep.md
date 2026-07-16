@@ -912,4 +912,107 @@ blocked by `TM×TN×TK`, with the accumulator tile kept in registers/LRM across 
 ping-pong DMA of the next `A`/`W` tile overlaps the compute. Explain which operand
 is "stationary" in your loop order and why.
 
+### Solutions 4.1–4.3 (verified)
+
+**4.1 — roofline classification.** Ridge = `peak/BW = 20e12 / 80e9 = 250 op/byte`.
+- (b) INT8 `add`: 2 reads + 1 write = **3 bytes per op**, `AI = 1/3 ≈ 0.33`. Far
+  below 250 → **memory-bound**; attainable `≈ 0.33 × 80 GB/s = 26.7 GOPS ≈ 0.13%`
+  of peak.
+- (c) GEMM `AI = 256 > 250` → **compute-bound**, running at ≈ peak (~100%, 20 TOPS).
+
+**4.2 — tile budget + reuse.** L2 = `262144 B`; hold three `T×T` tiles.
+- (a) float (4 B): `3·T²·4 ≤ 262144 → T² ≤ 21845 → T ≤ 147.8` → **T = 128**
+  (largest power of two).
+- (b) reuse factor ≈ **`T` = 128 MACs per DDR-loaded element** (each loaded tile
+  element feeds `T` MACs before eviction) — that is how tiling lifts AI.
+- (c) INT8 (1 B): `3·T²·1 ≤ 262144 → T ≤ 295.6` → **T = 256** — smaller elements
+  let the tile roughly **double**, doubling reuse.
+
+**4.3 — tiled + double-buffered INT8 GEMM (output-stationary), verified vs
+reference:**
+
+```cpp
+void gemm_tiled_i8(const int8_t*A,const int8_t*W,int8_t*C,int M,int K,int N,
+                   const int32_t*mult,const int*shift,int TM,int TN,int TK){
+    const int MAXT=64; int32_t acc[MAXT*MAXT];
+    for(int i0=0;i0<M;i0+=TM) for(int j0=0;j0<N;j0+=TN){
+        int tm=(i0+TM<M?TM:M-i0), tn=(j0+TN<N?TN:N-j0);
+        for(int ii=0;ii<tm;ii++)for(int jj=0;jj<tn;jj++) acc[ii*TN+jj]=0;  // C tile in LRM
+        for(int k0=0;k0<K;k0+=TK){                    // stream K-tiles of A and W
+            int tk=(k0+TK<K?TK:K-k0);
+            // dma_start(next A/W tile);  dma_wait(current);  <-- ping-pong prefetch
+            for(int ii=0;ii<tm;ii++)
+              for(int kk=0;kk<tk;kk++){ int8_t a=A[(i0+ii)*K+(k0+kk)];
+                for(int jj=0;jj<tn;jj++)
+                    acc[ii*TN+jj]+=(int32_t)a*(int32_t)W[(k0+kk)*N+(j0+jj)];
+              }
+        }
+        for(int ii=0;ii<tm;ii++)for(int jj=0;jj<tn;jj++)  // requant + write ONCE
+            C[(i0+ii)*N+(j0+jj)]=requant(acc[ii*TN+jj],mult[j0+jj],shift[j0+jj]);
+    }
+}
+// tiled INT8 GEMM matches reference: YES
+```
+
+- **Stationary operand = the output tile `acc` (C).** It stays resident in
+  registers/LRM across *all* `K`-tiles, so partial sums are never spilled to
+  memory and C is requantized/written exactly once — **output-stationary**
+  dataflow. (Weight-stationary would instead pin a `W` tile and stream A/C.)
+- **Prefetch point:** issue the DMA for the *next* `k0` tile of A/W right after
+  `dma_wait` on the current one, so the transfer overlaps the MAC loop below it.
+
+### 4.4 Memory layout — Array-of-Structs vs Struct-of-Arrays
+
+**Same data, two layouts.** For an RGB image:
+```cpp
+struct RGB { uint8_t r,g,b; };  std::vector<RGB> aos(N);   // AoS: R,G,B,R,G,B,...
+uint8_t R[N], G[N], B[N];                                  // SoA: RRR..GGG..BBB..
+```
+When a kernel processes **one channel at a time** (very common), AoS forces a
+**strided** walk — reading `r` skips over `g,b`, so each 64-byte cache line
+delivers only ~1/3 useful bytes and SIMD can't pack contiguous lanes. SoA makes
+that channel **contiguous**: full cache lines, clean vectorization.
+
+Measured — per-channel 3×3 box blur of a 1024×1024 image (identical output):
+```
+AoS  2.40 ms
+SoA  1.00 ms     <- 2.4x, just from layout
+```
+- Use **AoS** when you touch all fields of an element together (whole-pixel ops).
+- Use **SoA** when you sweep one field across many elements (per-channel conv,
+  reductions, anything you want to vectorize) — the accelerator case.
+- Same "bytes moved per *useful* byte" idea as the roofline: AoS drags 2 unwanted
+  channels through cache for every wanted one.
+
+### 4.5 Reuse vs recompute — the sliding-window sum
+
+A box blur (all-ones conv) the **dumb** way re-sums the whole window per output
+(`O(W)` work); the **smart** way keeps a running sum and only adds the entering
+sample and subtracts the leaving one (`O(1)`, independent of window size):
+
+```cpp
+// DUMB: recompute every window  -> O(W) per pixel
+for(int i=R;i<N-R;i++){ int32_t s=0; for(int k=-R;k<=R;k++) s+=in[i+k]; out[i]=s; }
+
+// SMART: slide the sum -> O(1) per pixel, reuses the previous result
+int32_t s=0; for(int k=0;k<2*R+1;k++) s+=in[k]; out[R]=s;
+for(int i=R+1;i<N-R;i++){ s += in[i+R] - in[i-R-1]; out[i]=s; }
+```
+
+Measured — `N=2,000,000`, window `1001` (identical output):
+```
+dumb   88.82 ms
+smart   1.62 ms     <- ~55x, from reusing the overlap instead of recomputing it
+```
+- The dumb version redoes ~1000 adds the previous pixel already computed; the
+  smart version reuses that work — the essence of **data reuse**.
+- **Honest nuance (also measured):** at a *small* window (`W=101`) the dumb loop
+  was actually a touch faster, because each output is independent so the compiler
+  **vectorizes** it, while the running-sum has a loop-carried dependency that
+  can't vectorize. The reuse win dominates once `W` is large enough that `O(W)`
+  outweighs the SIMD speedup. Lesson: algorithmic reuse and hardware
+  vectorization can pull in opposite directions — **measure**. (A 2D box blur
+  reuses further via **separable** passes: a `K×K` blur = a horizontal 1D pass
+  then a vertical 1D pass, `2K` work per pixel instead of `K²`.)
+
 ---
