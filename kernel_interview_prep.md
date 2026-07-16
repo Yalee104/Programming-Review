@@ -753,4 +753,57 @@ check (`C_in=2, C_out=3`).
   memory-bound accelerator. Real hardware often does **implicit im2col** — fuse
   the gather into the matmul's operand loading so `col` is never materialized.
 
+### 3.5 "Are all those loops efficient?" — loop order beats loop count
+
+The naive 6-loop conv is a **correctness baseline, not fast code** — but the fix
+is *not* fewer loops. Same math, same MAC count, different loop order:
+
+```cpp
+// (B) reordered: ox innermost -> stride-1, dependency-free -> vectorizes
+void conv_vectorizable(const float* in,const float* w,float* out,
+                       int C_in,int H,int W,int C_out,int KH,int KW){
+    int Ho=H-KH+1, Wo=W-KW+1;
+    memset(out,0,sizeof(float)*C_out*Ho*Wo);
+    for(int oc=0;oc<C_out;oc++)
+     for(int ic=0;ic<C_in;ic++)
+      for(int ky=0;ky<KH;ky++)
+       for(int kx=0;kx<KW;kx++){
+         float wv = w[oc*C_in*KH*KW+ic*KH*KW+ky*KW+kx];   // broadcast, invariant over ox
+         for(int oy=0;oy<Ho;oy++){
+           const float* irow = in + ic*H*W + (oy+ky)*W + kx;
+           float* orow = out + oc*Ho*Wo + oy*Wo;
+           for(int ox=0;ox<Wo;ox++) orow[ox] += irow[ox]*wv;  // stride-1 in & out
+         }
+       }
+}
+```
+
+Measured (`C_in=C_out=64, 64×64, 3×3` = 141.7M MACs, identical output, `diff=0`):
+
+```
+                            -O2        -O3 -march=native
+  naive (reduction inner)   125.47 ms   178.20 ms
+  reordered (ox inner)        78.25 ms    17.37 ms   <- ~10x, same math
+```
+
+- **Can't loop your way out of the arithmetic:** conv needs
+  `C_out·Ho·Wo·C_in·KH·KW` MACs; both versions do all of them. Loop *count* is the
+  wrong metric — **bytes moved per MAC** (arithmetic intensity) is the right one
+  (Topic 4 roofline).
+- **Why B wins:** its inner loop is stride-1 and dependency-free → the compiler
+  emits SIMD; the naive inner loop is a serial reduction with strided access. Plus
+  contiguous access (full cache lines, prefetch) and weight reuse (`wv` broadcast).
+- **`-O3` doesn't fix bad structure:** the naive form was *slower* at `-O3` than
+  `-O2` (178 vs 125). Speed came from writing a vectorizable loop shape, then
+  letting `-O3 -march=native` exploit it.
+- **Efficiency toolkit (all still loops):** loop reorder (shown) · tiling/blocking
+  (Topic 4) · im2col + tuned GEMM (§3.4) · SIMD intrinsics · Winograd/FFT
+  (*algorithmically* fewer MACs, changes numerics).
+- **On the PE array:** the loops are a *specification*; the compiler maps them to
+  dataflow — which dim is spatially unrolled across PEs, which stays **stationary**
+  (weight- vs output-stationary), and how tiles stream `DDR→L2→LRM`. "How many
+  loops" → "**what dataflow, how many bytes per MAC**" (Topic 4).
+- **Order to optimize in:** correct naive first → (1) memory access & reuse →
+  (2) enable vectorization/parallelism → (3) tile for the memory hierarchy.
+
 ---
