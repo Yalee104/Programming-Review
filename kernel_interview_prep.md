@@ -1168,3 +1168,127 @@ SIMD speedup. Algorithmic reuse and hardware vectorization can pull in opposite
 directions — **measure**.
 
 ---
+
+## 5. Operator Mapping
+
+An ONNX model is a **graph** of operators. The toolchain matches each op to a
+library kernel that runs on the PE array. Two things break that: an op the
+library **doesn't support**, and adjacent ops that each round-trip to DDR when
+they could share one pass. Operator mapping is the craft of (a) **decomposing**
+an op into primitives the array can run, (b) **fusing** ops to cut memory
+traffic, and (c) **partitioning** the graph around anything that can't map.
+
+**The primitive vocabulary.** Almost every op is a composition of a handful of
+shapes the array (or host) executes well:
+
+| primitive | what it is | examples |
+|-----------|-----------|----------|
+| **elementwise / map** | 1 output per input, no cross-talk | ReLU, add, mul, clamp, HardSwish |
+| **reduction** | collapse an axis | sum, max, mean → softmax denom, LayerNorm mean, pooling |
+| **contraction (MAC)** | multiply-accumulate over a shared dim | MatMul, Conv, attention |
+| **gather / scatter** | data-dependent addressing, no arithmetic | embedding lookup, im2col, indexing |
+| **broadcast** | replicate along a dim | bias add, scale |
+
+If an op decomposes into these, it maps. If it needs something **outside** the set
+— data-dependent control flow, **sorting**, dynamic shapes — it maps poorly and
+belongs on the host scalar core or as a custom kernel (NMS from §3.3 is the
+example).
+
+### Worked example A — decomposing an "exotic" op (HardSwish, verified)
+
+`HardSwish(x) = x · clamp(x+3, 0, 6) / 6` is not one library primitive, but it
+**decomposes** into ones we already have — all elementwise, so they fuse into a
+single pass:
+
+```cpp
+int32_t hardswish_q(int32_t x){                // Q16.16
+    int32_t t = x + to_q(3.0);                 // primitive: add (broadcast const)
+    t = imax(0, imin(to_q(6.0), t));           // primitive: clamp  = min then max
+    int32_t xt = q_mul(x, t);                  // primitive: multiply
+    return q_mul(xt, to_q(1.0/6.0));           // primitive: scale by 1/6
+}
+```
+```
+hardswish(-4.0) fixed=+0.0000  float=-0.0000
+hardswish(-2.0) fixed=-0.3333  float=-0.3333
+hardswish(+1.0) fixed=+0.6667  float=+0.6667
+hardswish(+3.0) fixed=+3.0001  float=+3.0000     // +0.0001 = Q16.16 rounding of 1/6
+hardswish(+4.0) fixed=+4.0001  float=+4.0000
+```
+The mapping recipe: **read the op's math, express it as add / clamp / mul /
+reduce, and check each piece is a supported primitive.** If yes, you have a
+kernel.
+
+### Worked example B — fusion (verified, measured)
+
+The tail after every Linear/Conv — `y = requantize(ReLU(x + bias))` — is three
+elementwise ops. **Unfused**, each is a separate pass that reads and writes the
+whole tensor to DDR. **Fused**, the intermediate never leaves a register:
+
+```cpp
+// UNFUSED: 3 passes, 3 tensor round-trips to memory
+for(int i=0;i<N;i++) t[i]  = x[i] + bias;      // read x, write t
+for(int i=0;i<N;i++) t[i]  = relu(t[i]);       // read t, write t
+for(int i=0;i<N;i++) y1[i] = rq(t[i], scale);  // read t, write y
+
+// FUSED: 1 pass, 1 round-trip
+for(int i=0;i<N;i++){
+    int32_t v = x[i] + bias;
+    v = relu(v);
+    y2[i] = rq(v, scale);
+}
+```
+```
+elementwise chain on 16M int32 (64 MB):   unfused 28.95 ms   fused 11.99 ms   (~2.4x, identical)
+```
+- These tails are **memory-bound** (Topic 4), so cutting memory passes ~3→1
+  directly cuts time. Fusion is the #1 practical mapping optimization.
+- The same idea inside a MAC op: fuse **Conv + Bias + ReLU + Requantize** by
+  keeping the INT32 accumulator in registers, adding bias, applying ReLU, and
+  requantizing to INT8 *before* the single write — instead of writing INT32,
+  re-reading it, etc. One write instead of several.
+
+### Partitioning around an unsupported op
+
+When one op in the graph can't map (say a custom **sort**/TopK, or NMS), you
+**cut** the graph: run the supported subgraphs on the array, hand the tensor to
+the host scalar core for the unsupported op, then hand back. Each accelerator↔host
+crossing is a **DDR round-trip + sync**, so the goals are: keep as much as
+possible on the array, make the fewest cuts, and cluster consecutive supported ops
+into one subgraph.
+
+```
+Conv → ReLU → [Custom Sort] → Gather → Conv        (→ = tensor edge)
+└──── array subgraph 1 ────┘   host    └─ array subgraph 2 ─┘
+                                cut          cut
+```
+Options, best first: (1) **support the op** (write a custom array kernel if it
+fits the primitives); (2) if it's inherently branchy/serial, run it on the host
+and minimize the handoff; (3) sometimes **replace/approximate** it with something
+that *does* map (e.g., swap an exotic activation for a clampable one) if accuracy
+allows.
+
+### Exercises
+
+**5.1 (easy) — decompose HardSigmoid.** `HardSigmoid(x) = clamp(0.2·x + 0.5, 0, 1)`.
+Write `hardsigmoid_q` in Q16.16 as a fused chain of primitives (scale, add,
+clamp). Name each primitive. Test `x = -4, -1, 0, 1, 4` and check against the float
+formula.
+
+**5.2 (medium) — map Softmax onto primitives.** Write down (and code) the primitive
+sequence for `softmax(v)` over a length-`n` vector: which steps are **reductions**,
+which are **elementwise**, and which is the awkward one for a fixed-point ALU?
+Implement it in float first (`max`-shift for stability → `exp` → `sum` → divide),
+then say how you'd realize `exp` with no FPU (hint: lookup table or polynomial on a
+reduced range). Which two steps could you fuse?
+
+**5.3 (interview) — partition a graph.** You are given this subgraph:
+`Conv → Add(bias) → HardSwish → TopK(k=100) → Gather → Conv`. The accelerator
+supports Conv/Add/HardSwish/Gather but **not** TopK (a data-dependent partial
+sort). (a) Draw the partition: which ops form array subgraphs, where does the host
+run? (b) How many accelerator↔host crossings, and what does each cost? (c) Which
+adjacent ops would you **fuse** within each array subgraph, and why? (d) The first
+Conv output is large; TopK keeps only 100 rows — does that change *where* you'd
+prefer to cut to reduce DDR traffic?
+
+---
