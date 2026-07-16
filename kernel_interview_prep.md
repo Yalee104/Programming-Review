@@ -298,4 +298,44 @@ Verified output (Q16.16, scale 65536):
   `0.7 → 45875` before squaring) drifts the result independently of the
   multiply's rounding mode.
 
+### Solution 1.3 (verified)
+
+```cpp
+int32_t q_mul_sat(int32_t a, int32_t b){
+    int64_t mul = (int64_t)a * (int64_t)b;             // Q32.32 in 64-bit
+    int64_t r   = (mul + (1 << (FRAC-1))) >> FRAC;      // round -> Q16.16, still 64-bit
+    if (r > INT32_MAX) r = INT32_MAX;                   // SATURATE the wide value...
+    if (r < INT32_MIN) r = INT32_MIN;
+    return (int32_t)r;                                  // ...then narrow (now lossless)
+}
+```
+
+**Range fact first:** a Q16.16 value lives in a signed 32-bit int, so its
+representable range is `[INT32_MIN/65536, INT32_MAX/65536] = [-32768, +32768)`.
+Anything with magnitude ≥ 32768 cannot be stored — including `40000.0`, whose raw
+form `40000×65536 = 2621440000` already exceeds `INT32_MAX`. So overflow is
+tested with in-range inputs whose *product* overflows (`200×200 = 40000`).
+
+Verified output:
+
+```
+max representable Q16.16 value = INT32_MAX/65536 = 32768.0
+
+256*256   sat=2147483647 (32768.0)   bad_narrow=0            (0.0)
+200*200   sat=2147483647 (32768.0)   bad_narrow=-1673527296  (-25536.0)
+200*-200  sat=-2147483648(-32768.0)  bad_narrow= 1673527296  ( 25536.0)
+1.5*2.0   sat=196608     (3.0)       bad_narrow=196608       (3.0)
+```
+
+- `256×256`: true product `65536.0` > max → saturate to `INT32_MAX` (decodes
+  `32768.0`). `200×200`: `+INT32_MAX`; `200×-200`: `INT32_MIN` (`-32768.0`).
+- **Why clamp on the 64-bit value, not after narrowing:** the raw `(int32_t)`
+  cast on an out-of-range `int64_t` wraps modulo `2^32`. `256×256`'s true raw
+  `2^32` narrows to **0** — overflow silently becomes *zero*; `200×200` wraps to
+  `-25536.0` (wrong sign and magnitude). Narrowing an out-of-range integer is
+  implementation-defined/modular and **destroys the clamp-to-max intent**.
+  Saturating the wide value guarantees it is in `[INT32_MIN, INT32_MAX]`, so the
+  final narrowing cast is lossless. This ordering *is* the kernel.
+- In-range products (`1.5×2.0`) are unaffected — saturation is a no-op there.
+
 ---
