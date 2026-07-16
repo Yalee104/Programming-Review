@@ -379,7 +379,10 @@ int32_t relu_branchless(int32_t x){ return x & ~(x >> 31); }   // max(0,x)
 // x>=0: (x>>31)=0, ~0=all-ones, x & all-ones = x
 // x<0 : (x>>31)=-1, ~(-1)=0,    x & 0        = 0
 
-int32_t abs_branchless(int32_t x){ int32_t m = x >> 31; return (x ^ m) - m; }
+int32_t abs_branchless(int32_t x){          // |x|
+    int32_t m = x >> 31;
+    return (x ^ m) - m;
+}
 // x>=0: m=0  -> (x^0)-0   = x
 // x<0 : m=-1 -> (x^-1)-(-1) = (~x)+1 = -x   (two's-complement negate)
 
@@ -454,7 +457,8 @@ int8_t relu_sat8(int32_t acc){ return (int8_t)imax(   0, imin(127, acc)); } // [
 
 // 2.3 one-pass branchless argmax (first index on ties)
 int argmax(const int32_t* v, int n){
-    int32_t best = v[0], best_idx = 0;
+    int32_t best = v[0];
+    int32_t best_idx = 0;
     for(int i = 1; i < n; i++){
         int32_t gt = -(v[i] > best);               // all-ones iff STRICTLY greater
         best_idx = (i    & gt) | (best_idx & ~gt); // select i    if gt else keep
@@ -618,22 +622,39 @@ void patch_at(const int8_t* in,int C_in,int H,int W,int KH,int KW,int oy,int ox,
 struct Box { int16_t x1,y1,x2,y2; };
 int32_t area(Box b){ return (int32_t)(b.x2-b.x1) * (int32_t)(b.y2-b.y1); }
 int32_t iou_q16(Box a, Box b){
-    int32_t ix1=imax(a.x1,b.x1), iy1=imax(a.y1,b.y1);
-    int32_t ix2=imin(a.x2,b.x2), iy2=imin(a.y2,b.y2);
-    int32_t iw=imax(0, ix2-ix1), ih=imax(0, iy2-iy1);       // overlap clamped >= 0
-    int32_t inter=iw*ih, uni=area(a)+area(b)-inter;
-    if(uni<=0) return 0;                                     // guard div-by-zero
-    return (int32_t)(((int64_t)inter << 16) / uni);          // IoU in Q16.16
+    int32_t ix1 = imax(a.x1, b.x1);               // intersection rectangle
+    int32_t iy1 = imax(a.y1, b.y1);
+    int32_t ix2 = imin(a.x2, b.x2);
+    int32_t iy2 = imin(a.y2, b.y2);
+    int32_t iw = imax(0, ix2 - ix1);              // overlap width,  clamped >= 0
+    int32_t ih = imax(0, iy2 - iy1);              // overlap height, clamped >= 0
+    int32_t inter = iw * ih;
+    int32_t uni   = area(a) + area(b) - inter;
+    if(uni <= 0) return 0;                         // guard divide-by-zero
+    return (int32_t)(((int64_t)inter << 16) / uni);   // IoU in Q16.16
 }
-int nms(const Box* boxes,const int32_t* score,int N,int32_t thr_q16,int* kept){
-    bool removed[64]={false}; int nkept=0;
+
+int nms(const Box* boxes, const int32_t* score, int N, int32_t thr_q16, int* kept){
+    bool removed[64] = {false};
+    int nkept = 0;
     for(;;){
-        int best=-1; int32_t bs=INT32_MIN;
-        for(int i=0;i<N;i++) if(!removed[i] && score[i]>bs){ bs=score[i]; best=i; }
-        if(best<0) break;
-        kept[nkept++]=best; removed[best]=true;
-        for(int j=0;j<N;j++)
-            if(!removed[j] && iou_q16(boxes[best],boxes[j])>thr_q16) removed[j]=true;
+        // pick the highest-scoring box still alive
+        int best = -1;
+        int32_t bs = INT32_MIN;
+        for(int i = 0; i < N; i++){
+            if(!removed[i] && score[i] > bs){
+                bs = score[i];
+                best = i;
+            }
+        }
+        if(best < 0) break;
+        kept[nkept++] = best;
+        removed[best] = true;
+        // suppress everything overlapping the winner
+        for(int j = 0; j < N; j++){
+            if(!removed[j] && iou_q16(boxes[best], boxes[j]) > thr_q16)
+                removed[j] = true;
+        }
     }
     return nkept;
 }
@@ -832,15 +853,23 @@ toward compute-bound.
 
 ```cpp
 // tiled ikj: block by T so A/B/C tiles stay hot in cache and get reused
-void mm_tiled(const float*A,const float*B,float*C,int N,int T){
-    memset(C,0,sizeof(float)*N*N);
-    for(int ii=0;ii<N;ii+=T) for(int kk=0;kk<N;kk+=T) for(int jj=0;jj<N;jj+=T){
-        int iM=min(ii+T,N),kM=min(kk+T,N),jM=min(jj+T,N);
-        for(int i=ii;i<iM;i++) for(int k=kk;k<kM;k++){
-            float a=A[i*N+k]; const float*Br=B+k*N; float*Cr=C+i*N;
-            for(int j=jj;j<jM;j++) Cr[j]+=a*Br[j];        // stride-1 inner
+void mm_tiled(const float* A, const float* B, float* C, int N, int T){
+    memset(C, 0, sizeof(float)*N*N);
+    for(int ii = 0; ii < N; ii += T)                 // tile over rows of C
+      for(int kk = 0; kk < N; kk += T)               // tile over the shared K dim
+        for(int jj = 0; jj < N; jj += T){            // tile over cols of C
+            int iM = min(ii+T, N);
+            int kM = min(kk+T, N);
+            int jM = min(jj+T, N);
+            for(int i = ii; i < iM; i++)
+              for(int k = kk; k < kM; k++){
+                  float a = A[i*N + k];
+                  const float* Br = B + k*N;
+                  float* Cr = C + i*N;
+                  for(int j = jj; j < jM; j++)
+                      Cr[j] += a * Br[j];            // stride-1 inner -> vectorizes
+              }
         }
-    }
 }
 ```
 
@@ -932,24 +961,38 @@ is "stationary" in your loop order and why.
 reference:**
 
 ```cpp
-void gemm_tiled_i8(const int8_t*A,const int8_t*W,int8_t*C,int M,int K,int N,
-                   const int32_t*mult,const int*shift,int TM,int TN,int TK){
-    const int MAXT=64; int32_t acc[MAXT*MAXT];
-    for(int i0=0;i0<M;i0+=TM) for(int j0=0;j0<N;j0+=TN){
-        int tm=(i0+TM<M?TM:M-i0), tn=(j0+TN<N?TN:N-j0);
-        for(int ii=0;ii<tm;ii++)for(int jj=0;jj<tn;jj++) acc[ii*TN+jj]=0;  // C tile in LRM
-        for(int k0=0;k0<K;k0+=TK){                    // stream K-tiles of A and W
-            int tk=(k0+TK<K?TK:K-k0);
-            // dma_start(next A/W tile);  dma_wait(current);  <-- ping-pong prefetch
-            for(int ii=0;ii<tm;ii++)
-              for(int kk=0;kk<tk;kk++){ int8_t a=A[(i0+ii)*K+(k0+kk)];
-                for(int jj=0;jj<tn;jj++)
-                    acc[ii*TN+jj]+=(int32_t)a*(int32_t)W[(k0+kk)*N+(j0+jj)];
-              }
-        }
-        for(int ii=0;ii<tm;ii++)for(int jj=0;jj<tn;jj++)  // requant + write ONCE
-            C[(i0+ii)*N+(j0+jj)]=requant(acc[ii*TN+jj],mult[j0+jj],shift[j0+jj]);
-    }
+void gemm_tiled_i8(const int8_t* A, const int8_t* W, int8_t* C, int M, int K, int N,
+                   const int32_t* mult, const int* shift, int TM, int TN, int TK){
+    const int MAXT = 64;
+    int32_t acc[MAXT*MAXT];                          // the output tile, kept in LRM
+
+    for(int i0 = 0; i0 < M; i0 += TM)
+      for(int j0 = 0; j0 < N; j0 += TN){
+          int tm = (i0+TM < M ? TM : M-i0);          // clamp tile at the edges
+          int tn = (j0+TN < N ? TN : N-j0);
+
+          // zero the accumulator tile
+          for(int ii = 0; ii < tm; ii++)
+            for(int jj = 0; jj < tn; jj++)
+                acc[ii*TN + jj] = 0;
+
+          // accumulate over all K-tiles WITHOUT writing C (output-stationary)
+          for(int k0 = 0; k0 < K; k0 += TK){
+              int tk = (k0+TK < K ? TK : K-k0);
+              // dma_start(next A/W tile); dma_wait(current);  <-- ping-pong prefetch
+              for(int ii = 0; ii < tm; ii++)
+                for(int kk = 0; kk < tk; kk++){
+                    int8_t a = A[(i0+ii)*K + (k0+kk)];
+                    for(int jj = 0; jj < tn; jj++)
+                        acc[ii*TN + jj] += (int32_t)a * (int32_t)W[(k0+kk)*N + (j0+jj)];
+                }
+          }
+
+          // requantize and write the C tile exactly once
+          for(int ii = 0; ii < tm; ii++)
+            for(int jj = 0; jj < tn; jj++)
+                C[(i0+ii)*N + (j0+jj)] = requant(acc[ii*TN + jj], mult[j0+jj], shift[j0+jj]);
+      }
 }
 // tiled INT8 GEMM matches reference: YES
 ```
@@ -965,8 +1008,12 @@ void gemm_tiled_i8(const int8_t*A,const int8_t*W,int8_t*C,int M,int K,int N,
 
 **Same data, two layouts.** For an RGB image:
 ```cpp
-struct RGB { uint8_t r,g,b; };  std::vector<RGB> aos(N);   // AoS: R,G,B,R,G,B,...
-uint8_t R[N], G[N], B[N];                                  // SoA: RRR..GGG..BBB..
+// AoS: one struct per pixel, laid out R,G,B,R,G,B,...
+struct RGB { uint8_t r, g, b; };
+std::vector<RGB> aos(N);
+
+// SoA: one contiguous array per channel, laid out RRR..GGG..BBB..
+uint8_t R[N], G[N], B[N];
 ```
 When a kernel processes **one channel at a time** (very common), AoS forces a
 **strided** walk — reading `r` skips over `g,b`, so each 64-byte cache line
@@ -991,12 +1038,23 @@ A box blur (all-ones conv) the **dumb** way re-sums the whole window per output
 sample and subtracts the leaving one (`O(1)`, independent of window size):
 
 ```cpp
-// DUMB: recompute every window  -> O(W) per pixel
-for(int i=R;i<N-R;i++){ int32_t s=0; for(int k=-R;k<=R;k++) s+=in[i+k]; out[i]=s; }
+// DUMB: recompute the whole window for every output  -> O(W) per pixel
+for(int i = R; i < N-R; i++){
+    int32_t s = 0;
+    for(int k = -R; k <= R; k++)
+        s += in[i+k];
+    out[i] = s;
+}
 
-// SMART: slide the sum -> O(1) per pixel, reuses the previous result
-int32_t s=0; for(int k=0;k<2*R+1;k++) s+=in[k]; out[R]=s;
-for(int i=R+1;i<N-R;i++){ s += in[i+R] - in[i-R-1]; out[i]=s; }
+// SMART: slide a running sum -> O(1) per pixel, reuses the previous result
+int32_t s = 0;
+for(int k = 0; k < 2*R+1; k++)            // prime the window with one full sum
+    s += in[k];
+out[R] = s;
+for(int i = R+1; i < N-R; i++){
+    s += in[i+R] - in[i-R-1];             // add entering sample, drop leaving one
+    out[i] = s;
+}
 ```
 
 Measured — `N=2,000,000`, window `1001` (identical output):
