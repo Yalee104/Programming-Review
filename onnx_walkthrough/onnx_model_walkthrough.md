@@ -641,6 +641,65 @@ graph-compile time, never executed at all; the only thing one can cost
 you is fusion adjacency if a naive compiler treats it as a barrier
 between two fusable compute ops.
 
+**And the last family members: Gather / Scatter — data-DEPENDENT plumbing.**
+Every movement op so far has *fixed* addressing: which values go where is
+fully known from the graph alone (a Transpose's permutation, a Slice's
+range — all compile-time constants). Gather and Scatter are different in
+kind: **the addresses come from a runtime tensor of indices.**
+
+- **Gather** — an indexed *read*: "give me rows 2, 0, 2 of this table."
+  `output = table[indices]`, where `indices` is itself data flowing
+  through the graph.
+- **Scatter** (ONNX: `ScatterElements` / `ScatterND`) — an indexed
+  *write*: "place these update values at positions 4 and 1 of this
+  tensor."
+
+```python
+import numpy as np
+
+# Gather = indexed READ: pick rows of a table by index.
+table = np.array([[1., 10.],     # row 0
+                  [2., 20.],     # row 1
+                  [3., 30.],     # row 2
+                  [4., 40.]])    # row 3
+indices = np.array([2, 0, 2])
+print(table[indices])
+# [[ 3. 30.]
+#  [ 1. 10.]
+#  [ 3. 30.]]      <- rows 2, 0, 2 - duplicates allowed
+
+# Scatter = indexed WRITE: place updates at given positions.
+buf = np.zeros(6)
+idx = np.array([4, 1])
+updates = np.array([9., 7.])
+buf[idx] = updates
+print(buf)
+# [0. 7. 0. 0. 9. 0.]
+```
+
+**Why networks need them.** Whenever the *data itself* decides what to
+fetch. The canonical case is the **embedding lookup** that starts every
+Transformer/LLM: the vocabulary is a big table (say 50,000 rows × 4,096
+features), the input is a list of token IDs, and one Gather turns
+`[15496, 2159]` into two 4,096-value vectors — exactly the demo above,
+scaled up. That's the Gather the Step 9.4 coda told you to expect at the
+front of every real BERT. Other regulars: detection models Gather-ing the
+box coordinates that survived non-max-suppression, and LLM inference
+Scatter-ing each newly computed key/value into its cache slot. In a plain
+CNN classifier you'll see neither — no part of a fixed conv pipeline
+depends on runtime indices.
+
+**Hardware note.** This pair is its own performance category, worse than
+Transpose: the access pattern is **unknowable at compile time** (it
+depends on index *values*), so the DMA engines and tiling plans that
+accelerators build around predictable, contiguous streams don't apply —
+gathers land as scattered random reads, and Scatter adds a write hazard
+(two updates targeting the same slot must be ordered). In practice these
+ops often run far below the chip's paper bandwidth or get punted to a host
+CPU entirely, splitting the graph — so on a porting engagement, "how many
+Gather/Scatter nodes, how big, and can they move to the pre/post-
+processing stage?" is a standard early-triage question.
+
 **Hardware note — the punchline for the Quadric job.** These ops do *zero*
 useful arithmetic yet consume real memory bandwidth, and on accelerators
 whose on-chip layout differs from the graph's assumed layout, a stray
@@ -665,6 +724,7 @@ bread-and-butter Field-Engineering work.
 | BatchNorm | tiny | unchanged | training-time signal conditioning | **free** — folds into Conv at inference |
 | LayerNorm | tiny | unchanged | same, per-sample (Transformers) | real runtime op, resists fusion |
 | Reshape/Transpose/Concat/Slice/(Un)Squeeze | no | shape/order only | interface adapters between layers | pure memory traffic; Transpose is the costly one, (Un)Squeeze the free ones |
+| Gather / Scatter | no | indexed read / write | data-dependent lookup (embeddings, box picks, KV-cache) | random access — worst-case memory pattern; may fall back to CPU |
 
 The mental model to carry into Step 1: a network is a dataflow pipeline
 alternating between **heavy compute components** (Conv, MatMul — where the
