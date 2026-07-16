@@ -484,3 +484,111 @@ Verified output:
   never branch.
 
 ---
+
+## 3. Core ML Kernels From Scratch
+
+Every kernel here is the same atom — the **MAC** (multiply-accumulate) — wrapped
+in the Topic 1 (fixed-point requantize) and Topic 2 (branchless saturate) tools.
+See `nn_operators_summary.md` §2/§9 for the reference conv2d/`gemm_i8` kernels;
+this section builds them up so you can write one cold.
+
+**The INT8 quantization contract.** A real tensor is stored as small integers
+plus a scale: `real ≈ scale × (q − zero_point)`. Weights are usually
+**symmetric** (`zero_point = 0`, so `real = scale × q`). A matmul then works
+entirely on the integers:
+```
+real_out = Σ_k (sa·a_q)(sw·w_q) = sa·sw · Σ_k a_q·w_q  =  sa·sw · acc_int32
+```
+- **Accumulate in INT32.** Each `int8×int8` product is ≤ `127×127 = 16129`;
+  summing `K` of them needs headroom. INT32 holds ~`2.1e9`, so it won't overflow
+  until `K ≳ 130000` worst-case — safe for real layers. This is why the ALU is
+  32-bit.
+- **Requantize back to INT8.** To store the result you divide by the output
+  scale: `out_q = round(acc · M) + out_zp`, where `M = (sa·sw)/so` is a small
+  real (< 1). With no FPU you represent `M` as a **fixed-point multiplier**:
+  `M ≈ mult · 2^(−shift)`, so `acc·M == (acc·mult) >> shift` (rounded), then
+  saturate to int8 (Topic 2 `sat8`).
+- **Per-channel.** Each output channel `c` has its own weight scale `sw[c]`, so
+  its own `mult[c]` / `shift[c]`. That is all "per-channel dequant" means.
+
+### Worked example — INT8 GEMM with per-channel requantize (verified)
+
+```cpp
+static int32_t imin(int32_t a,int32_t b){ return b ^ ((a^b) & -(a<b)); }
+static int32_t imax(int32_t a,int32_t b){ return a ^ ((a^b) & -(a<b)); }
+static int8_t  sat8(int32_t x){ return (int8_t)imax(-128, imin(127, x)); }
+
+// acc*M with M = mult*2^-shift, rounded, then saturated to int8.
+int8_t requant(int32_t acc, int32_t mult, int shift){
+    int64_t v = (int64_t)acc * (int64_t)mult;                        // widen
+    int32_t r = (int32_t)((v + ((int64_t)1 << (shift-1))) >> shift); // round-shift
+    return sat8(r);
+}
+
+// A[M][K] x W[K][N] -> INT32 accumulate -> per-output-channel requant -> INT8 C[M][N]
+void gemm_i8(const int8_t* A, const int8_t* W, int8_t* C,
+             int M, int K, int N, const int32_t* mult, const int* shift){
+    for(int m=0;m<M;m++)
+      for(int c=0;c<N;c++){
+        int32_t acc = 0;
+        for(int k=0;k<K;k++)
+            acc += (int32_t)A[m*K+k] * (int32_t)W[k*N+c];  // INT8*INT8 -> INT32 MAC
+        C[m*N+c] = requant(acc, mult[c], shift[c]);
+      }
+}
+```
+
+Verified output (`A` 2×3, `W` 3×2; ch0 `M=0.75`, ch1 `M=0.25`, shift 16):
+
+```
+m=0 c=0 acc= -70  fixed= -52  float=-52.50 (round -53)
+m=0 c=1 acc= 270  fixed=  68  float=67.50 (round 68)
+m=1 c=0 acc= 138  fixed= 104  float=103.50 (round 104)
+m=1 c=1 acc=-203  fixed= -51  float=-50.75 (round -51)
+requant(1000, M=0.5) = 127  (500 saturates to 127)
+requant(-2000,M=0.5) = -128 (-1000 saturates to -128)
+```
+
+- The MAC loop is pure `+= a*b` with **no branches** — exactly what a systolic PE
+  array wants.
+- **Tie-rounding gotcha** (row 0,0): `acc·M = −52.5`. The `+half then
+  arithmetic-shift` scheme rounds ties toward **+∞**, giving `−52`, while
+  round-half-away-from-zero gives `−53`. Both are "correct rounding"; they just
+  disagree on exact halves. Reference kernels (TFLite etc.) often use
+  round-half-to-even — so a **1-LSB mismatch on ties is a classic port bug**
+  (revisited in Topic 6). Know which rule your golden reference uses.
+- Saturation reuses `sat8`: out-of-int8 results clamp, they don't wrap.
+
+### Exercises
+
+**3.1 (easy) — INT8 dot product + overflow reasoning.** Write
+`int32_t dot_i8(const int8_t* a, const int8_t* w, int K)` = `Σ a[k]·w[k]`
+accumulated in INT32. Then answer: with both operands in `[−128,127]`, what is
+the largest possible single product, and what is the largest `K` for which the
+accumulator is guaranteed not to overflow INT32? Test on
+`a={1,2,3,4}, w={10,-10,10,-10}` (expect `−20`).
+
+**3.2 (medium) — conv2d as one dot product (im2col).** For a conv with input
+`[C_in][H][W]`, kernel `[C_out][C_in][KH][KW]`, VALID padding, stride 1: write
+`patch_at(in, C_in,H,W, KH,KW, oy,ox, int8_t* col)` that gathers the
+`C_in·KH·KW` input values covering output position `(oy,ox)` into `col`. Then one
+output pixel for channel `oc` is just `dot_i8(col, weight[oc], C_in*KH*KW)` from
+3.1 — **that identity (conv = im2col + GEMM) is the whole point.** Test on a
+`C_in=1, 4×4` image with a `3×3` kernel and check `(oy,ox)=(0,0)` gathers the
+top-left 3×3 block.
+
+**3.3 (interview) — non-max suppression (NMS).** Given `N` boxes as
+`int16 x1,y1,x2,y2` and `int32` scores, keep the highest-score box, remove every
+remaining box whose **IoU** (intersection-over-union) with it exceeds a threshold,
+repeat. Write `iou_q16(box a, box b) -> int32` returning IoU in **Q16.16**
+(integer intersection and union areas, one `q_div`), and `nms(...)` returning the
+kept indices. Watch: empty intersection must give 0 (branchless clamp of
+overlap width/height to ≥ 0), and the divide must not divide by zero. Test with
+two boxes overlapping ~50% (kept/suppressed depending on threshold) and one
+disjoint box (always kept).
+
+*Activations note:* ReLU / clamp / relu6 are the Topic 2 branchless primitives;
+GELU and **softmax** need `exp` in fixed-point, which we do properly in Topic 7
+(transformer), where softmax stability actually bites.
+
+---
