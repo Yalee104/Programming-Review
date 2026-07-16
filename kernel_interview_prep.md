@@ -807,3 +807,109 @@ Measured (`C_in=C_out=64, 64×64, 3×3` = 141.7M MACs, identical output, `diff=0
   (2) enable vectorization/parallelism → (3) tile for the memory hierarchy.
 
 ---
+
+## 4. Tiling & Data Reuse (the roofline)
+
+**The memory hierarchy.** `DDR/LPDDR` (GBs, slow, ~50 GB/s) → on-chip `L2` (KBs–MBs,
+fast) → per-PE `LRM`/registers (tiny, fastest). Every level up is ~10× faster and
+~10× smaller. A MAC is nearly free; **fetching its operands from DDR is the
+cost**. So the game is: load a byte once into fast memory and **reuse** it for as
+many MACs as possible before evicting it.
+
+**Tiling** = partition the loops so the working set of each block fits in fast
+memory and is reused there. Same MACs, far less DDR traffic.
+
+**Roofline** puts a number on it. Define **arithmetic intensity**
+`AI = ops / bytes_moved`. Attainable throughput is
+`min(peak_compute, AI × bandwidth)`. The crossover — the **ridge point** —
+is `AI = peak/bandwidth`:
+- `AI < ridge` → **memory-bound** (you're waiting on DDR; adding compute won't help).
+- `AI > ridge` → **compute-bound** (the array is saturated).
+Tiling **raises AI** (more reuse per loaded byte), sliding you right, up the ramp,
+toward compute-bound.
+
+### Worked example — tiled matmul + the roofline math (verified)
+
+```cpp
+// tiled ikj: block by T so A/B/C tiles stay hot in cache and get reused
+void mm_tiled(const float*A,const float*B,float*C,int N,int T){
+    memset(C,0,sizeof(float)*N*N);
+    for(int ii=0;ii<N;ii+=T) for(int kk=0;kk<N;kk+=T) for(int jj=0;jj<N;jj+=T){
+        int iM=min(ii+T,N),kM=min(kk+T,N),jM=min(jj+T,N);
+        for(int i=ii;i<iM;i++) for(int k=kk;k<kM;k++){
+            float a=A[i*N+k]; const float*Br=B+k*N; float*Cr=C+i*N;
+            for(int j=jj;j<jM;j++) Cr[j]+=a*Br[j];        // stride-1 inner
+        }
+    }
+}
+```
+
+Measured, `N=1024`, identical output (`diff=0`):
+
+```
+  naive ijk       7029.5 ms    0.31 GFLOP/s   <- B column-walk: cache-hostile
+  reorder ikj      181.3 ms   11.84 GFLOP/s   <- stream+vectorize: 39x
+  tiled T=64       159.3 ms   13.48 GFLOP/s   <- + reuse: further 1.14x
+```
+
+Roofline arithmetic for matmul (verified by calc):
+
+```
+matmul N=1024 = 2.15 GFLOP
+  AI perfect-reuse = 170.7 FLOP/byte   (read A,B + write C once -> compute-bound)
+  AI naive no-reuse=   0.25 FLOP/byte  (re-read a row+col per output -> memory-bound)
+
+accelerator: peak 10 TOPS, BW 50 GB/s  ->  ridge AI = 200 ops/byte
+  GEMM 256x256x256 (tiled)    AI=170.67  MEMORY   85.3% of peak
+  ReLU 1M int8 (elementwise)  AI=  0.50  MEMORY    0.2% of peak
+  batch-1 FC 2048x2048        AI=  2.00  MEMORY    1.0% of peak
+```
+
+- **Naive matmul AI is ~0.25** (re-reads a full row of A and column of B per
+  output); tiling drives effective AI toward the `N/6 ≈ 170` reuse ceiling. That
+  is the entire point of tiling: **raise AI**.
+- **Why the *measured* tiling gain is only 1.14×:** a CPU has *automatic* caches +
+  a hardware prefetcher, so `ikj` already reuses well. On the target accelerator
+  the on-chip buffer is a **software-managed scratchpad with no automatic cache** —
+  you must *explicitly* DMA tiles into L2/LRM, so **tiling is mandatory**, not a
+  1.14× bonus. Get it wrong and every access hits DDR.
+- **Most inference is memory-bound** (ReLU 0.2%, batch-1 FC 1.0% of peak) — matches
+  the ONNX walkthrough's "every attention row is memory-bound at batch 1." Big
+  well-tiled GEMMs are the exception that approaches peak.
+
+**DMA & double-buffering (prefetch).** Even with tiling you stall if compute waits
+for the next tile's DMA. Fix: **ping-pong buffers** — while the PE array computes
+on tile in buffer `A`, DMA the *next* tile into buffer `B`, then swap. Memory
+latency hides behind compute.
+
+```cpp
+// double-buffered tile stream (schematic)
+dma_start(buf[0], tile[0]);
+for (int t=0; t<num_tiles; ++t){
+    dma_wait(buf[t&1]);                       // this tile has arrived
+    if (t+1<num_tiles) dma_start(buf[(t+1)&1], tile[t+1]); // prefetch next
+    compute(buf[t&1]);                         // overlaps with the DMA above
+}
+```
+
+### Exercises
+
+**4.1 (easy) — roofline classification.** Accelerator: peak `20 TOPS`, bandwidth
+`80 GB/s`. (a) What is the ridge-point AI? (b) An elementwise `add` of two INT8
+tensors (read 2 bytes, write 1, per 1 op) — AI and bound? (c) A well-tiled INT8
+GEMM with AI `256` op/byte — bound, and at roughly what % of peak?
+
+**4.2 (medium) — tile-size budget + reuse factor.** On-chip L2 is `256 KB`. For a
+float GEMM you must hold three `T×T` tiles (A, B, C) simultaneously. (a) Largest
+`T` (power-of-two) that fits? (b) With that tile, how many MACs happen per float
+loaded from DDR (the reuse factor ≈ `T`)? (c) If you switch to INT8 (1 byte), how
+does the max `T` change?
+
+**4.3 (interview) — tiled + double-buffered INT8 GEMM.** Write `gemm_tiled_i8`:
+INT8 `A[M×K] · W[K×N]` → INT32 accumulate → `requant` (from §3) → INT8 `C[M×N]`,
+blocked by `TM×TN×TK`, with the accumulator tile kept in registers/LRM across the
+`K`-tiles (so C is written once). Then sketch (comments are fine) where the
+ping-pong DMA of the next `A`/`W` tile overlaps the compute. Explain which operand
+is "stationary" in your loop order and why.
+
+---
