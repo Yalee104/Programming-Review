@@ -1031,46 +1031,140 @@ SoA  1.00 ms     <- 2.4x, just from layout
 - Same "bytes moved per *useful* byte" idea as the roofline: AoS drags 2 unwanted
   channels through cache for every wanted one.
 
-### 4.5 Reuse vs recompute — the sliding-window sum
+### 4.5 Reuse vs recompute — a complete 2D box-blur example
 
-A box blur (all-ones conv) the **dumb** way re-sums the whole window per output
-(`O(W)` work); the **smart** way keeps a running sum and only adds the entering
-sample and subtracts the leaving one (`O(1)`, independent of window size):
+A box blur is a convolution with an all-ones `KH×KW` kernel. The **dumb** way
+re-adds the whole window for every output pixel. The **smart** (separable) way
+splits the 2D window into a vertical pass then a horizontal pass, so each vertical
+partial sum is computed **once and reused** by the horizontal outputs that overlap
+it. Below is the complete, runnable implementation for a `4×4` input and a `2×2`
+window (VALID padding, stride 1 → `3×3` output). It counts binary additions so the
+reuse is visible.
 
 ```cpp
-// DUMB: recompute the whole window for every output  -> O(W) per pixel
-for(int i = R; i < N-R; i++){
-    int32_t s = 0;
-    for(int k = -R; k <= R; k++)
-        s += in[i+k];
-    out[i] = s;
+#include <cstdio>
+
+// Output size: Ho = H-KH+1, Wo = W-KW+1. We compute the window SUM (divide by
+// KH*KW for the average). Both functions must produce identical output.
+
+// -------- DUMB: for every output pixel, re-add the whole KH x KW window --------
+long blur_dumb(const int* in, int H, int W, int KH, int KW, int* out){
+    int Ho = H - KH + 1;
+    int Wo = W - KW + 1;
+    long adds = 0;
+    for(int oy = 0; oy < Ho; oy++){
+        for(int ox = 0; ox < Wo; ox++){
+            int s = in[oy*W + ox];                 // seed with first element (no add)
+            for(int ky = 0; ky < KH; ky++){
+                for(int kx = 0; kx < KW; kx++){
+                    if(ky == 0 && kx == 0) continue;   // already seeded
+                    s += in[(oy+ky)*W + (ox+kx)];      // re-add every window element
+                    adds++;
+                }
+            }
+            out[oy*Wo + ox] = s;
+        }
+    }
+    return adds;
 }
 
-// SMART: slide a running sum -> O(1) per pixel, reuses the previous result
+// -------- SMART (separable): reduce each column over KH first (vertical partial
+// sums), then reduce each row of those over KW. Each vertical partial sum is
+// computed ONCE and reused by the KW overlapping horizontal outputs. --------
+long blur_separable(const int* in, int H, int W, int KH, int KW,
+                    int* vsum, int* out){          // vsum: scratch, size Ho*W
+    int Ho = H - KH + 1;
+    int Wo = W - KW + 1;
+    long adds = 0;
+    // Pass 1 (vertical): vsum[r][c] = sum of in[r..r+KH-1][c]
+    for(int r = 0; r < Ho; r++){
+        for(int c = 0; c < W; c++){
+            int s = in[r*W + c];                   // seed
+            for(int ky = 1; ky < KH; ky++){
+                s += in[(r+ky)*W + c];
+                adds++;
+            }
+            vsum[r*W + c] = s;
+        }
+    }
+    // Pass 2 (horizontal): out[r][c] = sum of vsum[r][c..c+KW-1]
+    for(int r = 0; r < Ho; r++){
+        for(int c = 0; c < Wo; c++){
+            int s = vsum[r*W + c];                  // seed (reuses a vertical partial sum)
+            for(int kx = 1; kx < KW; kx++){
+                s += vsum[r*W + (c+kx)];
+                adds++;
+            }
+            out[r*Wo + c] = s;
+        }
+    }
+    return adds;
+}
+
+int main(){
+    const int H = 4, W = 4, KH = 2, KW = 2;
+    const int Ho = H-KH+1, Wo = W-KW+1;
+    int in[H*W];
+    for(int i = 0; i < H*W; i++) in[i] = i + 1;     // 1..16
+
+    int out_dumb[Ho*Wo], out_sep[Ho*Wo], vsum[Ho*W];
+    long a_dumb = blur_dumb(in, H, W, KH, KW, out_dumb);
+    long a_sep  = blur_separable(in, H, W, KH, KW, vsum, out_sep);
+
+    int bad = 0;
+    for(int i = 0; i < Ho*Wo; i++) if(out_dumb[i] != out_sep[i]) bad++;
+    printf("identical: %s   adds: dumb=%ld separable=%ld\n", bad==0?"YES":"NO", a_dumb, a_sep);
+    return 0;
+}
+```
+
+Verified output:
+
+```
+input 4x4:                vertical partial sums vsum[3x4]:     output 3x3 (2x2 sum):
+  1   2   3   4              6   8  10  12                       dumb:      14 18 22 30 34 38 46 50 54
+  5   6   7   8             14  16  18  20                       separable: 14 18 22 30 34 38 46 50 54
+  9  10  11  12             22  24  26  28
+ 13  14  15  16
+
+identical: YES   adds: dumb=27 separable=21
+```
+
+- **Where the reuse is:** `vsum[0][1] = in[0][1]+in[1][1] = 8` is computed **once**
+  but feeds *two* outputs — `out[0][0]=vsum[0][0]+vsum[0][1]=6+8=14` and
+  `out[0][1]=vsum[0][1]+vsum[0][2]=8+10=18`. The dumb version recomputes that
+  column pair for each. Hence `27 → 21` adds even on this tiny case.
+- **It scales hard:** dumb does `KH·KW−1` adds per output; separable does
+  `(KH−1)+(KW−1)`. For `3×3`: 8 vs 4; for `7×7`: 48 vs 12 — the gap grows with the
+  window. This is why separable filters are a standard optimization.
+
+**Pushing reuse further — the 1D sliding sum.** Within one pass you can also reuse
+the *overlap between adjacent windows*: keep a running sum and only add the
+entering sample / subtract the leaving one — `O(1)` per output regardless of window
+size.
+
+```cpp
+// 1D running sum: reuses the previous window's result
 int32_t s = 0;
-for(int k = 0; k < 2*R+1; k++)            // prime the window with one full sum
+for(int k = 0; k < 2*R+1; k++)            // prime the window once
     s += in[k];
 out[R] = s;
 for(int i = R+1; i < N-R; i++){
-    s += in[i+R] - in[i-R-1];             // add entering sample, drop leaving one
+    s += in[i+R] - in[i-R-1];             // + entering sample, - leaving sample
     out[i] = s;
 }
 ```
 
-Measured — `N=2,000,000`, window `1001` (identical output):
+Measured against the recompute version — `N=2,000,000`, window `1001`:
 ```
 dumb   88.82 ms
-smart   1.62 ms     <- ~55x, from reusing the overlap instead of recomputing it
+smart   1.62 ms     <- ~55x
 ```
-- The dumb version redoes ~1000 adds the previous pixel already computed; the
-  smart version reuses that work — the essence of **data reuse**.
-- **Honest nuance (also measured):** at a *small* window (`W=101`) the dumb loop
-  was actually a touch faster, because each output is independent so the compiler
-  **vectorizes** it, while the running-sum has a loop-carried dependency that
-  can't vectorize. The reuse win dominates once `W` is large enough that `O(W)`
-  outweighs the SIMD speedup. Lesson: algorithmic reuse and hardware
-  vectorization can pull in opposite directions — **measure**. (A 2D box blur
-  reuses further via **separable** passes: a `K×K` blur = a horizontal 1D pass
-  then a vertical 1D pass, `2K` work per pixel instead of `K²`.)
+**Honest nuance (also measured):** at a *small* window (`W=101`) the dumb loop was
+actually a touch faster — each output is independent so the compiler **vectorizes**
+it, while the running sum has a loop-carried dependency that cannot vectorize. The
+reuse win only dominates once the window is large enough that `O(W)` outweighs the
+SIMD speedup. Algorithmic reuse and hardware vectorization can pull in opposite
+directions — **measure**.
 
 ---
