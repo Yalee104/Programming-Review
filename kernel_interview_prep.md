@@ -228,4 +228,36 @@ computes the 64-bit product, rounds, and **saturates** the Q16.16 result to
 `[INT32_MIN, INT32_MAX]` *before* narrowing to `int32_t` — with **no undefined
 behaviour** on the narrowing. Test with `256.0 × 256.0` and `40000.0 × 40000.0`.
 
+### Solution 1.1 (verified)
+
+Key idea: **the stored integer is never the value — divide by the scale to get
+the value.** `ONE8 = 1<<8 = 256` represents `1.0`. `INT16_MAX = 32767` is the
+largest stored *integer*, not the largest *value*.
+
+```cpp
+static const int    FRAC8 = 8;                 // fractional bits (n)
+static const int16_t ONE8 = 1 << FRAC8;        // 256 == the value 1.0 (scale=2^8)
+
+int16_t to_q88(double x){ return (int16_t)std::lround(x * ONE8); } // float -> Q8.8
+double  to_f88(int16_t q){ return (double)q / ONE8; }             // Q8.8  -> float
+int16_t q_add88(int16_t a, int16_t b){ return a + b; }            // shared scale
+```
+
+Verified output:
+
+```
+ONE8 = 256
+to_q88(3.14) = 804 ; to_f88 -> 3.140625          // 3.14*256=803.84 -> round 804; /256=3.140625
+largest value  = INT16_MAX/256 = 32767/256 = 127.99609
+most negative  = INT16_MIN/256 = -32768/256 = -128.00000
+resolution     = 1/256          = 0.00390625      // one stored unit is worth 1/scale
+q_add88(1.5,2.25) raw=960 -> 3.7500
+```
+
+- **Largest value** = `32767/256 ≈ 127.996` (not 32767). Range `[-128, +127.996]`.
+- **Resolution** = `1/256 ≈ 0.0039` (not 256). Scale and resolution are
+  reciprocals: scale = steps per 1.0, resolution = size of one step.
+- Common trap: quoting the *stored integer* as the value, or the *scale* as the
+  step. Always `value = stored / scale`.
+
 ---
