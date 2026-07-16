@@ -260,4 +260,42 @@ q_add88(1.5,2.25) raw=960 -> 3.7500
 - Common trap: quoting the *stored integer* as the value, or the *scale* as the
   step. Always `value = stored / scale`.
 
+### Solution 1.2 (verified)
+
+```cpp
+int32_t q_mul_trunc(int32_t a, int32_t b){          // floor: drops low bits
+    int64_t p = (int64_t)a * (int64_t)b;
+    return (int32_t)(p >> FRAC);
+}
+int32_t q_mul_round(int32_t a, int32_t b){          // round to nearest
+    int64_t p = (int64_t)a * (int64_t)b;
+    return (int32_t)((p + (1 << (FRAC - 1))) >> FRAC);   // NOTE the parentheses
+}
+```
+
+**Precedence footgun:** writing `p + (1<<15) >> FRAC` *without* the outer parens
+still works (in C++ `+` binds tighter than `>>`, so it is `(p+32768)>>16`), but
+`g++ -Wparentheses` warns and the next reader will misread it. Always
+parenthesize the add before the shift.
+
+Verified output (Q16.16, scale 65536):
+
+```
+0.10^2: q=6554 prod=42954916 | trunc=655 round=655 truth=655 | dropped_frac=0.4400
+0.01^2: q=655  prod=429025   | trunc=6   round=7   truth=7   | dropped_frac=0.5464
+```
+
+- `0.1 × 0.1`: both give **655**, truth **655** → **0 LSB difference**. Rounding
+  and truncation only diverge when the dropped fraction is **≥ 0.5**; here it is
+  `0.44`, so both floor to the same value.
+- `0.01 × 0.01`: dropped fraction `0.55` → **truncation = 6 (off by 1 LSB),
+  rounding = 7 (exact, truth = round(6.5536) = 7).** This is the case that shows
+  why the `+2^(n-1)` bias exists.
+- Truncation has a **systematic downward bias** (always floors) that accumulates
+  over long MAC chains; rounding is unbiased. On the fixed-point ALU, prefer
+  rounding.
+- Separate error source to keep in mind: quantizing an *input* (e.g.
+  `0.7 → 45875` before squaring) drifts the result independently of the
+  multiply's rounding mode.
+
 ---
