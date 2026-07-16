@@ -591,4 +591,83 @@ disjoint box (always kept).
 GELU and **softmax** need `exp` in fixed-point, which we do properly in Topic 7
 (transformer), where softmax stability actually bites.
 
+### Solutions 3.1–3.3 (verified)
+
+```cpp
+static int32_t imin(int32_t a,int32_t b){ return b ^ ((a^b) & -(a<b)); }
+static int32_t imax(int32_t a,int32_t b){ return a ^ ((a^b) & -(a<b)); }
+
+// 3.1 INT8 dot product, INT32 accumulate
+int32_t dot_i8(const int8_t* a, const int8_t* w, int K){
+    int32_t acc = 0;
+    for(int k=0;k<K;k++) acc += (int32_t)a[k] * (int32_t)w[k];
+    return acc;
+}
+
+// 3.2 im2col: gather the C_in*KH*KW inputs for output (oy,ox), order [c][ky][kx]
+void patch_at(const int8_t* in,int C_in,int H,int W,int KH,int KW,int oy,int ox,int8_t* col){
+    int idx=0;
+    for(int c=0;c<C_in;c++)
+      for(int ky=0;ky<KH;ky++)
+        for(int kx=0;kx<KW;kx++)
+            col[idx++] = in[c*H*W + (oy+ky)*W + (ox+kx)];
+    // one output pixel oc = dot_i8(col, weight[oc], C_in*KH*KW)  -> conv == im2col + GEMM
+}
+
+// 3.3 NMS with Q16.16 IoU
+struct Box { int16_t x1,y1,x2,y2; };
+int32_t area(Box b){ return (int32_t)(b.x2-b.x1) * (int32_t)(b.y2-b.y1); }
+int32_t iou_q16(Box a, Box b){
+    int32_t ix1=imax(a.x1,b.x1), iy1=imax(a.y1,b.y1);
+    int32_t ix2=imin(a.x2,b.x2), iy2=imin(a.y2,b.y2);
+    int32_t iw=imax(0, ix2-ix1), ih=imax(0, iy2-iy1);       // overlap clamped >= 0
+    int32_t inter=iw*ih, uni=area(a)+area(b)-inter;
+    if(uni<=0) return 0;                                     // guard div-by-zero
+    return (int32_t)(((int64_t)inter << 16) / uni);          // IoU in Q16.16
+}
+int nms(const Box* boxes,const int32_t* score,int N,int32_t thr_q16,int* kept){
+    bool removed[64]={false}; int nkept=0;
+    for(;;){
+        int best=-1; int32_t bs=INT32_MIN;
+        for(int i=0;i<N;i++) if(!removed[i] && score[i]>bs){ bs=score[i]; best=i; }
+        if(best<0) break;
+        kept[nkept++]=best; removed[best]=true;
+        for(int j=0;j<N;j++)
+            if(!removed[j] && iou_q16(boxes[best],boxes[j])>thr_q16) removed[j]=true;
+    }
+    return nkept;
+}
+```
+
+Verified output:
+
+```
+3.1 dot_i8 = -20 (want -20)
+    max |product| = 128*128 = 16384 ; safe K < INT32_MAX/16384 = 131071
+3.2 patch(0,0) = [0,1,2,4,5,6,8,9,10]
+    conv 2x2 (all-ones 3x3) = 45 54 81 90
+3.3 IoU(A,B) q16=21845 (0.3333)  IoU(A,C)=0
+    thr=0.3 kept [0 2]   (want 0 2)
+    thr=0.5 kept [0 1 2] (want 0 1 2)
+```
+
+- **3.1**: the largest-magnitude product is `−128×−128 = 16384` (bigger than
+  `127×127`). Worst case all products are `16384`, so the accumulator stays in
+  INT32 while `K·16384 ≤ INT32_MAX`, i.e. `K ≤ 131071`. Real conv/FC layers are
+  far below that, which is why an INT32 accumulator is enough.
+- **3.2**: `patch(0,0)` gathers the top-left 3×3 block `[0,1,2,4,5,6,8,9,10]`;
+  the all-ones kernel makes each output the sum of its 3×3 window
+  (`45,54,81,90`). The gather turns conv into the **same** `dot_i8` from 3.1 —
+  that identity (**conv = im2col + GEMM**) is why accelerators implement one fast
+  matmul and lower everything else onto it. Cost: im2col duplicates overlapping
+  pixels (`KH·KW×` memory), which is why it is memory-bound (Topic 4).
+- **3.3**: `imax(0, ix2−ix1)` makes a non-overlapping box give `iw=0 →
+  inter=0 → IoU=0` with no branch; the `uni<=0` guard avoids div-by-zero; IoU is
+  one `(inter<<16)/uni` in Q16.16. `IoU(A,B)=0.3333`, so threshold `0.3`
+  suppresses B (kept `{0,2}`) but `0.5` keeps it (`{0,1,2}`). The disjoint box C
+  is always kept. NMS is the *branchy* counter-example: the greedy pick+suppress
+  loop is inherently data-dependent, so it runs on the scalar core, not the PE
+  array — knowing **which** kernels belong on the array vs the host is itself an
+  interview point (Topic 5).
+
 ---
