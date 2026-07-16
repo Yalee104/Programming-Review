@@ -1,0 +1,6 @@
+# Verified with Python 3.11: numpy 2.4.6, onnx 1.22.0, onnxruntime 1.27.0
+numpy>=2.0
+onnx>=1.22
+onnxruntime>=1.27
+netron>=8.0
+onnxsim>=0.6            # graph simplifier, used as the lab's answer cross-check
