@@ -1457,4 +1457,194 @@ memory- or compute-bound — how do you tell in one measurement? (b) Name three
 concrete changes (from Topics 2–5) and which bottleneck each attacks. (c) After
 fixing, what roughly caps your achievable speedup, and why?
 
+### Solutions 6.1–6.3 (verified where code)
+
+**6.1 — signature → bug.**
+- (a) constant `+5` everywhere → a **bias / zero-point** added (or the wrong
+  constant). Confirm: subtract 5 → error vanishes; audit the bias/`zero_point` term.
+- (b) interior right, **last row & column wrong** → **padding / bounds off-by-one**
+  at the edge. Confirm: shrink to a case with no border, or hand-check the boundary
+  index (`oy+ky`, `ox+kx` running past `H`/`W`).
+- (c) values **permuted** but the set is right → **layout / indexing** (transpose,
+  wrong stride, im2col order). Confirm: feed an asymmetric input where position
+  matters and watch where each value lands.
+- (d) error **grows with magnitude** → **wrong Q-scale / shift** (a multiplicative
+  error). Confirm: plot err vs value — a straight line whose slope is the
+  scale ratio; check `mult`/`shift`.
+
+**6.2 — the bug (verified).** The loops flatten in order `ic → kx → ky`, but the
+weights are stored `ic → ky → kx`. So each `KH×KW` window is **transposed** before
+the dot product. Fix = swap the two inner loops back to `ky` then `kx`:
+
+```cpp
+for(int ic=0; ic<C_in; ic++)
+  for(int ky=0; ky<KH; ky++)      // ky before kx -> matches weight storage
+    for(int kx=0; kx<KW; kx++)
+      col[t++] = in[ic*H*W + (oy+ky)*W + (ox+kx)];
+```
+```
+weights   : 10 20 30 40
+col (bug) : 1 3 2 4  -> dot=290      // transposed window
+col (fix) : 1 2 3 4  -> dot=300      // correct
+```
+
+**6.3 — "too slow" at 4% of peak.**
+- (a) **One measurement:** time the kernel; compute bytes moved and MACs done. If
+  `bytes/time ≈ 50 GB/s` (peak BW) it's **memory-bound**; if `MACs/time ≈ 10 TOPS`
+  it's compute-bound. Reading the weight from DDR *every MAC* means enormous
+  traffic and near-zero reuse → **memory-bound** here.
+- (b) Three fixes: **tile + keep weights in LRM** and reuse across outputs (attacks
+  memory — raises AI); **output-stationary accumulation**, writing each result once
+  instead of streaming partials (attacks memory — fewer writes); **fuse
+  bias+ReLU+requant** into the accumulate and **reorder the inner loop to
+  vectorize** (attacks compute/access). Double-buffer the tile DMA to hide latency.
+- (c) After fixing, the **roofline caps you**: once reuse makes AI high the conv
+  becomes **compute-bound**, so you're capped near peak MAC rate — limited by PE
+  array **utilization** (edge/tail effects, the requant tail) rather than DDR.
+
+---
+
+## 7. LLM / Transformer Deep-Dive (the kernel angle)
+
+The ONNX walkthrough built one encoder block with random weights. Here is the same
+machinery as **kernels**, in execution order, with the pieces that actually matter
+for an LLM: multi-head, causal masking, embeddings/positional, and the KV-cache
+decode loop. Everything reuses earlier topics — attention is literally **two GEMMs
+with a softmax between them**.
+
+**A decoder block, end to end:**
+```
+token ids ──Gather──> embeddings ──+ positional──> x
+  for each block:
+     x ──LayerNorm──> ──[Wq,Wk,Wv GEMMs]──> Q,K,V
+     Q,K,V ──split into H heads──> per-head causal attention ──concat──> ──Wo GEMM──> a
+     x = x + a                                  (residual)
+     x = x + MLP(LayerNorm(x))                  (MLP = 2 GEMMs + activation)
+  x ──final LayerNorm──> ──Wlm GEMM──> logits
+```
+Kernel inventory: **GEMM** (every projection + MLP — Topic 3), **softmax** (Topic
+5, `exp` in fixed-point), **LayerNorm** (two reductions + elementwise — Topic 5),
+**Gather** (embeddings), **elementwise add** (residual). No new primitive — a
+transformer is a *schedule* of the kernels you already have.
+
+### 7.1 Worked example — single-head causal attention (verified)
+
+Scaled dot-product attention: `scores = Q·Kᵀ/√d`, causal-mask, `softmax` per row,
+then `·V`. The causal mask — "position `i` may only attend to `j ≤ i`" — is just
+the **loop bound** `j <= i` (a lane-position predicate, no `-inf` fill needed):
+
+```cpp
+void attention_causal(const float* Q,const float* K,const float* V,int L,int d,float* out){
+    float scale = 1.0f/std::sqrt((float)d);
+    std::vector<float> p(L);
+    for(int i=0;i<L;i++){                                  // each query position
+        float m = -1e30f;
+        for(int j=0;j<=i;j++){                             // CAUSAL: only keys j<=i
+            float s=0;
+            for(int k=0;k<d;k++) s += Q[i*d+k]*K[j*d+k];   // Q.Kᵀ  (GEMM row)
+            p[j] = s*scale;
+            if(p[j] > m) m = p[j];
+        }
+        float sum=0;
+        for(int j=0;j<=i;j++){ p[j] = std::exp(p[j]-m); sum += p[j]; }  // stable softmax
+        for(int j=0;j<=i;j++) p[j] /= sum;
+        for(int k=0;k<d;k++){                              // P.V  (second GEMM)
+            float acc=0;
+            for(int j=0;j<=i;j++) acc += p[j]*V[j*d+k];
+            out[i*d+k] = acc;
+        }
+    }
+}
+```
+
+Verified attention weights (`L=4, d=2`) — note the **lower-triangular** shape (each
+row sums to 1 over only the allowed keys):
+```
+i=0: 1.000 0.000 0.000 0.000
+i=1: 0.451 0.549 0.000 0.000
+i=2: 0.290 0.396 0.314 0.000
+i=3: 0.209 0.319 0.232 0.239
+```
+- **Fixed-point mapping:** `Q·Kᵀ` and `P·V` are INT8 GEMMs (Topic 3); the `1/√d`
+  scale folds into the requantize multiplier; `exp` uses `exp_q` (Topic 5).
+- **On the array:** the causal mask is a per-lane position compare (branchless
+  predicate); softmax is a max-reduce, exp, sum-reduce, divide across the row.
+
+### 7.2 Multi-head — split, attend, concat
+
+Multi-head splits the `d`-dim into `H` heads of size `dh = d/H`; each head runs the
+same attention on its own slice, then the outputs concatenate back to `d`. It's a
+**reshape**, not new math:
+
+```cpp
+// x is [L][d]; view head h as columns [h*dh, (h+1)*dh). Run attention per head.
+for(int h=0; h<H; h++){
+    // gather this head's Q,K,V slices (stride d, offset h*dh), each [L][dh]
+    // attention_causal(Qh, Kh, Vh, L, dh, out_h);
+    // write out_h back into columns [h*dh, (h+1)*dh) of the [L][d] output
+}
+// then one Wo GEMM mixes the concatenated heads.
+```
+Why: each head learns a different relation (syntax, coreference, …) on a cheaper
+`dh`-dim subspace. Cost is the same as one `d`-dim attention — `H` heads of size
+`d/H` — but more expressive.
+
+### 7.3 KV-cache decode — the LLM runtime pattern (verified)
+
+Generation has two phases. **Prefill:** run full causal attention over the prompt
+once (the `O(L²)` triangle above). **Decode:** produce tokens one at a time — but
+recomputing all past rows every step would be `O(L²)` *per token*. Instead **cache
+K and V**: each new token computes one query, appends its `k,v` to the cache, and
+attends over `cache[0..t]`:
+
+```cpp
+void decode_step(const float* q,const float* Kc,const float* Vc,int t,int d,float* out){
+    float scale = 1.0f/std::sqrt((float)d);
+    std::vector<float> p(t+1);
+    float m=-1e30f;
+    for(int j=0;j<=t;j++){ float s=0; for(int k=0;k<d;k++) s+=q[k]*Kc[j*d+k]; p[j]=s*scale; if(p[j]>m)m=p[j]; }
+    float sum=0; for(int j=0;j<=t;j++){ p[j]=std::exp(p[j]-m); sum+=p[j]; }
+    for(int j=0;j<=t;j++) p[j]/=sum;
+    for(int k=0;k<d;k++){ float acc=0; for(int j=0;j<=t;j++) acc+=p[j]*Vc[j*d+k]; out[k]=acc; }
+}
+// append token t's k,v to the cache, then decode_step over cache[0..t].
+```
+Verified: decoding token-by-token with the cache reproduces the full-attention
+output **exactly** (`max diff = 0`). The cache turns per-step cost from `O(L²)` into
+`O(L)`.
+
+### 7.4 The seq² story and why decode is memory-bound
+
+- **Prefill** attention scores are `L×L` → compute and memory grow as **`O(L²)`**.
+  The weight-projection GEMMs grow only linearly in `L`, so at long context the
+  `Q·Kᵀ`/`P·V` (data×data) matmuls dominate. This is what **FlashAttention**
+  (never materialize the `L×L` matrix — tile and stream), **KV-caching**, and
+  **sliding-window** attention all attack.
+- **Decode** is **memory-bound**: each new token does only `O(L·d)` MACs but must
+  **read the entire KV cache** (`O(L·d)` bytes) — arithmetic intensity ~1, far
+  below the roofline ridge. So LLM decode throughput is set by **memory bandwidth**
+  reading the cache, not by the MAC array — exactly the "batch-1 is memory-bound"
+  finding from Topics 4 and the ONNX walkthrough. Batching many sequences and
+  quantizing the KV cache to INT8 are the standard fixes (more MACs per cache byte
+  loaded → higher AI).
+
+### Exercises
+
+**7.1 (easy) — read the triangle.** In the verified weights above, row `i=2` is
+`0.290 0.396 0.314 0`. (a) Why is the 4th entry 0? (b) Why do the first three sum to
+1? (c) If this were **non-causal** (encoder) attention, what would change in the
+loop?
+
+**7.2 (medium) — multi-head split.** Given `attention_causal` and `x` as `[L][d]`
+with `H` heads (`dh=d/H`), write the loop that (i) extracts head `h`'s `Q,K,V`
+slices (columns `[h*dh, (h+1)*dh)`, row stride `d`), (ii) calls `attention_causal`
+per head, and (iii) writes each head's `[L][dh]` output back into the right columns
+of the `[L][d]` result. Test that `H=1` reproduces plain single-head attention.
+
+**7.3 (interview) — KV-cache cost + INT8 cache.** For decode at position `t` with
+model dim `d`: (a) how many MACs and how many cache **bytes read** per token (fp16
+vs int8 cache)? (b) Compute the arithmetic intensity and argue memory- vs
+compute-bound. (c) Why does **batching** sequences raise the AI, and what's the
+catch? (d) One numerical risk of an INT8 KV cache and how you'd mitigate it.
+
 ---
