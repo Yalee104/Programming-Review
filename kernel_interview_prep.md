@@ -437,4 +437,50 @@ Test with `{3, 1, 4, 1, 5, 9, 2, 6}` (expect index 5) and a tie like
 `{7, 2, 7, 1}` (expect index 0). (Hint: `int32_t gt = -(v[i] > best);` gives a
 mask; use it to conditionally overwrite both `best` and `best_idx`.)
 
+### Solutions 2.1–2.3 (verified)
+
+```cpp
+// 2.1 signum: -1 / 0 / +1, branchless
+int signum(int32_t x){ return (x > 0) - (x < 0); }
+// (x>0),(x<0) are each int 0/1 and never both 1:
+//   +ve -> 1-0=+1 ; -ve -> 0-1=-1 ; 0 -> 0-0=0
+
+// 2.2 saturate a wide accumulator to int8 (requantize clamp)
+static int32_t imin(int32_t a,int32_t b){ return b ^ ((a^b) & -(a<b)); } // a<b?a:b
+static int32_t imax(int32_t a,int32_t b){ return a ^ ((a^b) & -(a<b)); } // a<b?b:a
+int8_t sat8(int32_t acc)     { return (int8_t)imax(-128, imin(127, acc)); } // [-128,127]
+int8_t relu_sat8(int32_t acc){ return (int8_t)imax(   0, imin(127, acc)); } // [0,127]
+// clamp FIRST (value now provably in range), THEN narrow -> cast is lossless (cf. 1.3)
+
+// 2.3 one-pass branchless argmax (first index on ties)
+int argmax(const int32_t* v, int n){
+    int32_t best = v[0], best_idx = 0;
+    for(int i = 1; i < n; i++){
+        int32_t gt = -(v[i] > best);               // all-ones iff STRICTLY greater
+        best_idx = (i    & gt) | (best_idx & ~gt); // select i    if gt else keep
+        best     = (v[i] & gt) | (best     & ~gt); // select v[i] if gt else keep
+    }
+    return best_idx;
+}
+```
+
+Verified output:
+
+```
+2.1 signum: -9->-1  -1->-1  0->0  1->1  42->1
+2.2 sat8:      -500->-128  -128->-128  0->0  100->100  127->127  500->127
+2.2 relu_sat8: -500->0     -128->0     0->0  100->100  127->127  500->127
+2.3 argmax {3,1,4,1,5,9,2,6}=5 (want 5) ; {7,2,7,1}=0 (want 0)
+```
+
+- **2.1**: comparisons yield `int` 0/1; subtracting them covers all three signs
+  with no branch or mask.
+- **2.2**: `imin(127,·)` caps the top, `imax(lo,·)` the bottom; `relu_sat8` just
+  uses `lo=0`. Clamp-then-narrow keeps the cast lossless.
+- **2.3**: the mask is built from `>` (**strict**), so ties never overwrite →
+  first index wins. `(a&gt)|(b&~gt)` is the select; no `if`/`?:` in the loop, so
+  it maps to a PE-array reduction.
+- **Through-line:** build a mask from the comparison, then **select** with it —
+  never branch.
+
 ---
