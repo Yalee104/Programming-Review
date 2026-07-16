@@ -670,4 +670,87 @@ Verified output:
   array — knowing **which** kernels belong on the array vs the host is itself an
   interview point (Topic 5).
 
+### 3.4 Conv2d in depth — direct loops and im2col
+
+**What conv computes.** For each output pixel: take a `C_in·KH·KW` window of the
+input, multiply element-wise with the kernel, sum. That is **6 nested loops**
+(oc → oy → ox → ic → ky → kx); the inner three are a **dot product over the
+receptive field**.
+
+Worked example — `3×3` input `1..9`, `2×2` kernel `[[1,2],[3,4]]`, VALID / stride
+1 → `2×2` output. Output(0,0) uses window `[[1,2],[4,5]]`:
+`1·1 + 2·2 + 4·3 + 5·4 = 37`. Sliding gives `[[37,47],[67,77]]`.
+
+#### (A) Direct — the 6 loops
+
+```cpp
+// in [C_in][H][W], weight [C_out][C_in][KH][KW], out [C_out][Ho][Wo], row-major
+void conv2d_direct(const int32_t* in, const int32_t* w, int32_t* out,
+                   int C_in,int H,int W, int C_out,int KH,int KW){
+    int Ho=H-KH+1, Wo=W-KW+1;                     // VALID padding, stride 1
+    for(int oc=0; oc<C_out; oc++)
+      for(int oy=0; oy<Ho; oy++)
+        for(int ox=0; ox<Wo; ox++){
+            int32_t acc = 0;
+            for(int ic=0; ic<C_in; ic++)
+              for(int ky=0; ky<KH; ky++)
+                for(int kx=0; kx<KW; kx++)
+                    acc += in[ic*H*W + (oy+ky)*W + (ox+kx)]
+                         * w [oc*(C_in*KH*KW) + ic*KH*KW + ky*KW + kx];
+            out[oc*Ho*Wo + oy*Wo + ox] = acc;
+        }
+}
+```
+
+Index math is row-major flattening: `[ic][iy][ix]` → `ic*(H*W)+iy*W+ix`. Output
+`(oy,ox)` reads the window starting at input `(oy,ox)` (stride 1). INT8 variant:
+`in`/`w` become `int8_t`, `acc` stays `int32_t`, then `requant()` (see §3 GEMM).
+
+#### (B) im2col — turn conv into GEMM
+
+im2col ("image to column") is a **data rearrangement**: each sliding window is
+flattened into one **row** of a matrix `[P=Ho·Wo][K=C_in·KH·KW]`.
+
+```
+im2col matrix (each row = one output window, flattened in weight order):
+  row 0 (out 0,0): [1,2,4,5]
+  row 1 (out 0,1): [2,3,5,6]
+  row 2 (out 1,0): [4,5,7,8]
+  row 3 (out 1,1): [5,6,8,9]
+kernel flattened: [1,2,3,4]
+```
+
+Each **row · flattened-kernel = one output pixel** — the same dot product the
+direct loops compute. So `col[P×K] @ weightᵀ[K×C_out] = out[P×C_out]` is a
+**GEMM**.
+
+```cpp
+void im2col(const int32_t* in, int32_t* col, int C_in,int H,int W,int KH,int KW){
+    int Ho=H-KH+1, Wo=W-KW+1, K=C_in*KH*KW;
+    for(int oy=0; oy<Ho; oy++)
+      for(int ox=0; ox<Wo; ox++){
+        int p = oy*Wo + ox, t = 0;                // p = row, t = 0..K-1
+        for(int ic=0; ic<C_in; ic++)              // SAME order as the weights
+          for(int ky=0; ky<KH; ky++)
+            for(int kx=0; kx<KW; kx++)
+              col[p*K + t++] = in[ic*H*W + (oy+ky)*W + (ox+kx)];
+      }
+}
+// then gemm(col, weight, out, P=Ho*Wo, K=C_in*KH*KW, C_out)  -- the §3 GEMM
+```
+
+Verified: direct and im2col agree (`37 47 67 77`), including a multi-channel
+check (`C_in=2, C_out=3`).
+
+- **The rule that makes it correct:** im2col must flatten each window in the
+  **exact order the weights are stored** (`ic→ky→kx`). Then col-position `t`
+  aligns with weight element `t`. Wrong order = silent garbage (classic port bug).
+- **Why:** hardware/BLAS has one hyper-optimized GEMM; lowering conv onto it
+  (im2col + GEMM) reuses all that tiling/vectorization. "Conv is MatMul wearing a
+  sliding-window costume."
+- **The cost (→ Topic 4):** the col matrix duplicates each input pixel up to
+  `KH·KW×` (a `3×3` conv ≈ 9× the input bytes), which is expensive on a
+  memory-bound accelerator. Real hardware often does **implicit im2col** — fuse
+  the gather into the matmul's operand loading so `col` is never materialized.
+
 ---
