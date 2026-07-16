@@ -599,6 +599,48 @@ bytes already sit in the right order in memory, only the shape label
 changes. **Transpose is not free** — element order genuinely changes, so
 every byte must physically move to a new address.
 
+**Two more family members: Squeeze / Unsqueeze.** These are Reshape's
+specialized little siblings:
+
+- **Unsqueeze(axis=k)** — insert a new axis of size 1 at position k:
+  `(3,)` → `(1, 3)`.
+- **Squeeze(axis=k)** — delete an axis, legal only if its size is 1:
+  `(1, 3)` → `(3,)`.
+
+Anything they do, a Reshape could also do; they exist as named ops because
+"add/remove a size-1 axis" is such a common intent that it deserves a
+self-documenting form — the same reason a codebase has `push_front()`
+instead of making everyone write the general insert. Both are pure
+relabeling like Reshape: a size-1 axis contributes nothing to memory
+layout, so no values move, not even the reading order changes.
+
+```python
+import numpy as np
+
+t = np.array([1., 2., 3.])                 # shape (3,)
+u = np.expand_dims(t, 0)                   # numpy's Unsqueeze, at axis 0
+print(u, u.shape)                          # [[1. 2. 3.]] (1, 3)
+u2 = np.expand_dims(u, 2)                  # Unsqueeze again, at axis 2
+print(u2.shape)                            # (1, 3, 1)
+s = u2.squeeze(2).squeeze(0)               # Squeeze both back off
+print(s, s.shape)                          # [1. 2. 3.] (3,)
+
+g = np.zeros((1, 16, 1, 1))                # a GlobalAveragePool output
+print(g.squeeze(3).squeeze(2).shape)       # (1, 16)  <- ready for a Linear
+```
+
+You'll rarely see them in an architecture diagram but constantly in real
+exported graphs, because they're the standard glue for **rank mismatches**
+(rank = how many axes a tensor has): bridging GlobalAveragePool's
+`[N, C, 1, 1]` to the `[N, C]` a Linear layer wants (the demo's last
+line); reshaping a per-channel bias `[C]` to `[C, 1, 1]` so broadcasting
+lines up; and every `x[:, None]` / `x.unsqueeze(0)` / `x.squeeze()` in
+framework code becomes one of these nodes. Hardware-wise they're the
+friendliest ops in the zoo — metadata-only, usually resolved at
+graph-compile time, never executed at all; the only thing one can cost
+you is fusion adjacency if a naive compiler treats it as a barrier
+between two fusable compute ops.
+
 **Hardware note — the punchline for the Quadric job.** These ops do *zero*
 useful arithmetic yet consume real memory bandwidth, and on accelerators
 whose on-chip layout differs from the graph's assumed layout, a stray
@@ -622,7 +664,7 @@ bread-and-butter Field-Engineering work.
 | Softmax | no | unchanged | scores → sums-to-1 confidence / attention budget | cheap in CNNs; sync point in attention |
 | BatchNorm | tiny | unchanged | training-time signal conditioning | **free** — folds into Conv at inference |
 | LayerNorm | tiny | unchanged | same, per-sample (Transformers) | real runtime op, resists fusion |
-| Reshape/Transpose/Concat/Slice | no | shape/order only | interface adapters between layers | pure memory traffic; Transpose is the costly one |
+| Reshape/Transpose/Concat/Slice/(Un)Squeeze | no | shape/order only | interface adapters between layers | pure memory traffic; Transpose is the costly one, (Un)Squeeze the free ones |
 
 The mental model to carry into Step 1: a network is a dataflow pipeline
 alternating between **heavy compute components** (Conv, MatMul — where the
